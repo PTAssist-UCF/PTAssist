@@ -25,13 +25,16 @@ Needs Python 3.12. Run these from `ai/`:
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+source .venv/bin/activate        # Windows PowerShell: .venv\Scripts\Activate.ps1
 pip install -r requirements-dev.txt
 
 uvicorn app.main:app --reload --port 8001   # http://localhost:8001/health and /docs
 pytest
-ruff check . && ruff format --check .
+ruff check .
+ruff format --check .
 ```
+
+On Windows, if PowerShell says running scripts is disabled, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once and try again.
 
 The service uses port 8001, so it can run next to the API on 8000. The API finds it through `AI_SERVICE_URL` in `/.env.example`. It needs no environment variables yet.
 
@@ -46,7 +49,7 @@ docker build -t ptassist-ai ai              # from the repo root
 docker run --rm -p 8001:8001 ptassist-ai    # http://localhost:8001/health
 ```
 
-The image starts from `python:3.12-slim`, installs ffmpeg and the system libraries OpenCV and MediaPipe need with `apt-get`, then installs `requirements.txt` with pip. It runs as a non-root user. The `Dockerfile` explains each step.
+The image starts from `python:3.12-slim-trixie` (Debian 13), installs ffmpeg and the system libraries OpenCV and MediaPipe need with `apt-get`, then installs `requirements.txt` with pip. It runs as a non-root user. The `Dockerfile` explains each step.
 
 ### In Docker Compose (SCRUM-19)
 

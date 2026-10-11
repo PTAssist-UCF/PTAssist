@@ -24,8 +24,9 @@ class HealthResponse(BaseModel):
 class AnalyzeRequest(BaseModel):
     """What the backend sends to POST /analyze."""
 
-    # The upload session this video belongs to. The backend uses it to know where to
-    # save our result.
+    # The backend's id for the upload session this video belongs to. The analysis does
+    # not need it, and we do not send it back: the backend already knows which session
+    # it asked about. It is useful for labelling our log lines.
     session_id: uuid.UUID
     # Which exercise the patient recorded, for example "exercise_1". It decides which
     # analyzer in app/analysis/exercises/ runs.

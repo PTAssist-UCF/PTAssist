@@ -142,7 +142,8 @@ jobs:
         run: docker build --tag ptassist-ai:ci ./ai
       # A missing system library only shows up inside the image, so load the video
       # libraries there and run ffmpeg once. Importing MediaPipe does not load its
-      # native code; making an image does.
+      # native code; creating a mediapipe.Image object does, so that line fails if
+      # MediaPipe's system libraries are missing.
       - name: Check OpenCV, MediaPipe, and ffmpeg in the image
         run: |
           docker run --rm ptassist-ai:ci python -c "
