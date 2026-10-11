@@ -69,6 +69,7 @@ ai/                  Analysis service
   tests/fixtures/    Keypoint JSON test data (no videos except small licensed clips)
 infra/README.md      Record of every Azure setting
 docs/                Specs, test data plan, security checklist, reports
+compose.yaml         Local stack: Postgres, Azurite, the API, and the AI service
 .env.example         Local environment variables (backend, AI, Compose)
 ```
 

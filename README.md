@@ -56,7 +56,31 @@ AGENTS.md   Context for AI coding agents
 
 ## Getting started
 
-Setup steps are added in Sprint 1 as each service is built. You will need Docker, Python 3.12, and Node.js (LTS). The local stack (database, storage, API, AI service) will run with `docker compose up`.
+You need Docker with Compose: Docker Desktop on Windows and macOS. On Linux, install Docker Engine from https://docs.docker.com/engine/install/, which includes Compose (`docker compose version` should work). To work on a service and run its tests you also need Python 3.12 (backend, AI) or Node.js LTS (frontend); see its README.
+
+Run the whole local stack (database, storage, API, and AI service) from the repo root:
+
+```bash
+cp .env.example .env         # once, then fill in what you need (see its comments)
+docker compose up --build    # the first build takes a few minutes
+```
+
+In a second terminal, also in the repo root, `docker compose ps` should show all four services as `healthy`:
+
+| Service | On your computer |
+| --- | --- |
+| API | http://localhost:8000/docs |
+| AI service | http://localhost:8001/docs |
+| Postgres | `localhost:5434`, user, password, and database all `ptassist` |
+| Azurite (local blob storage) | `localhost:10000` |
+
+- Everything starts without `/.env`. Sign-in needs `CLERK_SECRET_KEY` (from the team), and storage needs `AZURITE_ACCOUNT_KEY` (see `/.env.example`).
+- After you change code, run `docker compose up --build` again to rebuild.
+- `docker compose down` stops the stack and keeps the data. `docker compose down -v` also deletes the database and the stored files.
+- If `api` stops with "Can't locate revision", your database has a migration from another branch. `docker compose down -v` resets it (this deletes your local data).
+- Working on one service? Start only what it needs, for example `docker compose up -d db azurite` (`-d` runs them in the background), and run the service itself on your machine (see its README). If the full stack is already running, first stop the service you will run yourself, for example `docker compose stop api`, because it holds the same port.
+
+The stack is defined in `compose.yaml`.
 
 ## Working together
 

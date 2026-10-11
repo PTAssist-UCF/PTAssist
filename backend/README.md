@@ -27,7 +27,7 @@ Dockerfile   API image, also used to run migrations
 
 ## Run locally
 
-Needs Python 3.12, a Postgres database, and Azurite for storage (see Testing). Run these from `backend/`:
+Needs Python 3.12, plus Postgres and Azurite for storage. The simplest way to get both is Docker Compose: run `docker compose up -d db azurite` from the repo root (see the root README, Getting started). `DATABASE_URL` and `STORAGE_CONNECTION_STRING` in `/.env.example` already point at them. Then run these from `backend/`:
 
 ```bash
 python -m venv .venv
@@ -57,6 +57,8 @@ docker run --rm -p 8000:8000 -e DATABASE_URL=<url> -e CLERK_SECRET_KEY=<key> \
 ```
 
 The same image runs migrations: `docker run --rm -e DATABASE_URL=<url> ptassist-api alembic upgrade head`.
+
+To run the API with its database, storage, and the AI service, use Docker Compose (root README, Getting started). There the `api` service runs `alembic upgrade head` each time it starts, then the server.
 
 ## Migrations
 
@@ -173,15 +175,19 @@ storage.delete(key)  # no error if it is already gone
 - If storage refuses the connection, calls fail within a few seconds (3 quick retries). If it does not answer, each of the 4 tries waits up to 5 seconds to connect, about 25 seconds in all. Once connected, each try waits up to 60 seconds for a reply (the SDK's default), which a slow 4 MB block upload can need. Either way the route returns `500`.
 - Raw videos are deleted after 30 days by a lifecycle rule on the Azure storage account (SCRUM-81). Azurite emulates only reading and writing files, not account settings like this rule, so it has no equivalent: local files stay until you delete them.
 
-### Storage in Docker Compose (SCRUM-19)
+### Storage in Docker Compose
 
-`UseDevelopmentStorage=true` always means Azurite on `127.0.0.1:10000`, and inside a container `127.0.0.1` is the container itself. So an API container, including the `docker run` in Docker above, needs the full connection string with Azurite's address. In Docker Compose the API reaches Azurite by its service name:
+`UseDevelopmentStorage=true` always means Azurite on `127.0.0.1:10000`, and inside a container `127.0.0.1` is the container itself. So an API container, including the `docker run` in Docker above, needs the full connection string with Azurite's address. `/compose.yaml` gives the `api` service this one, where `azurite` is Azurite's service name:
 
 ```
-DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=<Azurite key>;BlobEndpoint=http://azurite:10000/devstoreaccount1;
+DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=${AZURITE_ACCOUNT_KEY};BlobEndpoint=http://azurite:10000/devstoreaccount1;
 ```
 
-`<Azurite key>` is Azurite's well-known development key, published in Microsoft's Azurite documentation. It is not a real secret, but GitHub secret scanning flags it like any Azure storage key and may block the push. Keep it out of the repo: SCRUM-19 adds a separate variable for it to `/.env.example`, with a comment and no value (for example `COMPOSE_STORAGE_CONNECTION_STRING`), and the Compose file passes it to the API container as `STORAGE_CONNECTION_STRING`. Developers fill it in their own `/.env` (never committed). Do not reuse `STORAGE_CONNECTION_STRING` from `/.env` for this: it stays `UseDevelopmentStorage=true` for running the API on your machine. Read links then start with `http://azurite:10000/`, which the AI service container can reach too. The Azurite image's default command already listens on `0.0.0.0`.
+`AZURITE_ACCOUNT_KEY` is Azurite's well-known development key, published in Microsoft's Azurite documentation (the link is in `/.env.example`). It is not a real secret, but GitHub secret scanning flags it like any Azure storage key and may block the push, so it is not in the repo: each developer puts it in their own `/.env` (never committed). Without it the stack still starts and `/health` works, but storage calls in the Compose API fail with "The storage connection string has no account key to sign read links".
+
+Compose sets the `api` service's other settings itself and takes only `CLERK_SECRET_KEY`, `CLERK_AUTHORIZED_PARTIES`, and `AZURITE_ACCOUNT_KEY` from `/.env`. The other values in `/.env`, such as `DATABASE_URL` and `STORAGE_CONNECTION_STRING` (`UseDevelopmentStorage=true`), are for running the API on your computer.
+
+Read links made in Compose start with `http://azurite:10000/`. The AI service container can open them; your browser cannot, because only containers in the stack know the name `azurite`.
 
 ## Config
 
@@ -196,6 +202,7 @@ Read from environment variables (see `/.env.example`): database URL, Clerk setti
 | `STORAGE_CONTAINER` | API | Private blob container for videos. Default `videos`. Created if missing |
 | `TEST_DATABASE_URL` | pytest | The test database. See Testing |
 | `TEST_STORAGE_CONNECTION_STRING` | pytest | The test storage, by default `UseDevelopmentStorage=true`. See Testing |
+| `AZURITE_ACCOUNT_KEY` | Docker Compose | Azurite's well-known key, for the `api` service's connection string. Not read by the API itself. See Storage in Docker Compose |
 
 Alembic only needs `DATABASE_URL`. Without `CLERK_SECRET_KEY` the API still starts, but every route that needs sign-in fails with `500`. Without `STORAGE_CONNECTION_STRING` it also starts, but anything that uses storage fails with `500`.
 
@@ -205,7 +212,7 @@ A connection string contains `;`, so in `/.env` wrap any value other than `UseDe
 
 pytest, against a real Postgres database: `TEST_DATABASE_URL`, by default `postgresql+psycopg://ptassist:ptassist@localhost:5433/ptassist_test`. Tests always use it in place of `DATABASE_URL`. Each run builds the schema with `alembic upgrade head`, empties the tables before every test, and drops everything at the end with `alembic downgrade base`, so every run also checks that the migrations work both ways. Never point it at a database you want to keep.
 
-Start the test database once with Docker. It uses port 5433 so it does not clash with a dev database on 5432:
+Start the test database once with Docker. It uses port 5433 so it does not clash with the Compose database (5434) or a Postgres installed on your computer (5432):
 
 ```bash
 docker run -d --name ptassist-test-db -p 5433:5432 \
@@ -217,7 +224,7 @@ After a reboot, run `docker start ptassist-test-db`. Without Docker, create an e
 
 Storage tests run against real Azurite, never Azure: `TEST_STORAGE_CONNECTION_STRING`, by default `UseDevelopmentStorage=true` (Azurite on `127.0.0.1:10000`). Tests always use it in place of `STORAGE_CONNECTION_STRING`, and fail for any account other than Azurite's `devstoreaccount1`. Each run creates its own container (`test-<random>`) and deletes it at the end. Storage tests do not need Postgres. If Azurite is not running, they fail with a message that points here.
 
-Start Azurite once with Docker (blob service only):
+Only one Azurite can use port 10000 at a time. If the Compose stack is running, the tests use its Azurite, so skip this step. If you created `ptassist-test-storage` earlier, run `docker stop ptassist-test-storage` before `docker compose up`, or Compose fails with "port is already allocated". Otherwise start Azurite once with Docker (blob service only):
 
 ```bash
 docker run -d --name ptassist-test-storage -p 10000:10000 \
@@ -230,7 +237,7 @@ After a reboot, run `docker start ptassist-test-storage`. Without Docker, run it
 npx --yes --package=azurite@3.37.0 azurite-blob --inMemoryPersistence
 ```
 
-Keep the Azurite version and the `azure-storage-blob` pin in `requirements.txt` in step. Azurite refuses API versions newer than it knows, so a newer SDK alone fails every storage test with "The API version ... is not supported by Azurite". Bump both together, here and in `/.github/workflows/pr-ci.yml`.
+Keep the Azurite version and the `azure-storage-blob` pin in `requirements.txt` in step. Azurite refuses API versions newer than it knows, so a newer SDK alone fails every storage test with "The API version ... is not supported by Azurite". Bump both together, here, in `/compose.yaml`, and in `/.github/workflows/pr-ci.yml`.
 
 Use the `storage` fixture for the app's storage, and `blob_service` (an Azure SDK client) to check what it did:
 

@@ -1,0 +1,101 @@
+# The local stack: Postgres, Azurite (local Azure Blob storage), the API, and the AI
+# service. From the repo root:
+#
+#   docker compose up --build      start everything (Ctrl+C stops it)
+#   docker compose ps              every service should say "healthy"
+#   docker compose down            stop and remove the containers (data is kept)
+#   docker compose down -v         same, and also delete the database and stored files
+#
+# Settings that differ per developer come from /.env (copy /.env.example). Without a
+# /.env, everything still starts; see README.md, Getting started.
+
+name: ptassist
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      # Local-only login. It matches DATABASE_URL in /.env.example.
+      POSTGRES_USER: ptassist
+      POSTGRES_PASSWORD: ptassist
+      POSTGRES_DB: ptassist
+    ports:
+      # Every port is listed twice, for this computer's IPv4 and IPv6 addresses
+      # (127.0.0.1 and ::1). Only this computer can connect, not the network, and
+      # "localhost" works either way. With only 127.0.0.1, connecting to "localhost"
+      # takes about 10 seconds on Windows, because it tries ::1 first.
+      # If `up` fails with "cannot assign requested address" for [::1], IPv6 is turned
+      # off on your computer (some Linux setups): ask in Discord.
+      # Port 5434 on your computer, so it does not clash with a Postgres you installed
+      # yourself (usually on 5432) or the test database (5433).
+      - "127.0.0.1:5434:5432"
+      - "[::1]:5434:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      # Checks over TCP, so the short setup run on the very first start (which only
+      # accepts local socket connections) does not count as healthy.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "ptassist", "-d", "ptassist"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  azurite:
+    # Same version as CI. Upgrade it together with azure-storage-blob in
+    # backend/requirements.txt (see the comment there).
+    image: mcr.microsoft.com/azure-storage/azurite:3.37.0
+    ports:
+      - "127.0.0.1:10000:10000"
+      - "[::1]:10000:10000"
+    volumes:
+      - azurite-data:/data
+    healthcheck:
+      # Healthy once Azurite accepts connections on its blob port.
+      test: ["CMD", "nc", "-z", "127.0.0.1", "10000"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./backend
+    # Bring the database schema up to date, then start the API.
+    command: sh -c "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    environment:
+      # Inside Compose, services reach each other by service name (db, azurite, ai).
+      DATABASE_URL: postgresql+psycopg://ptassist:ptassist@db:5432/ptassist
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
+      CLERK_AUTHORIZED_PARTIES: ${CLERK_AUTHORIZED_PARTIES:-http://localhost:5173}
+      # Azurite's address inside Compose. AZURITE_ACCOUNT_KEY comes from /.env (see
+      # backend/README.md, Storage in Docker Compose).
+      STORAGE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=${AZURITE_ACCOUNT_KEY:-};BlobEndpoint=http://azurite:10000/devstoreaccount1;"
+      STORAGE_CONTAINER: videos
+      AI_SERVICE_URL: http://ai:8001
+    ports:
+      - "127.0.0.1:8000:8000"
+      - "[::1]:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      azurite:
+        condition: service_healthy
+    healthcheck:
+      # The image has no curl, so Python calls /health.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ai:
+    build: ./ai
+    ports:
+      - "127.0.0.1:8001:8001"
+      - "[::1]:8001:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  db-data:
+  azurite-data:
