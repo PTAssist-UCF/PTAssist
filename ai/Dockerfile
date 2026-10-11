@@ -4,9 +4,6 @@ FROM python:3.12-slim-trixie
 
 # Show print() and log output in `docker logs` right away, instead of buffering it.
 ENV PYTHONUNBUFFERED=1
-# Importing MediaPipe also loads matplotlib, which needs a folder it can write its
-# cache to. The app user below has no home folder, so use /tmp.
-ENV MPLCONFIGDIR=/tmp/matplotlib
 WORKDIR /app
 
 # Programs and system libraries that pip can't install:
@@ -29,8 +26,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 
-# Run as a non-root user.
-RUN useradd --system --no-create-home app
+# Run as a non-root user. It gets a home folder because importing MediaPipe also loads
+# matplotlib, which keeps small cache files there (its own and the system font list).
+RUN useradd --system --create-home app
 USER app
 
 # Listen on 0.0.0.0 so other containers and your computer can reach the service
