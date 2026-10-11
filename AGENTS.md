@@ -36,11 +36,11 @@ These decisions are final. **Do not change them, add alternatives, or introduce 
 | AI modules | Video-to-keypoints (`ai/app/keypoints/`) and keypoints-to-analysis (`ai/app/analysis/`) are separate. Analysis never touches video, so live feedback can reuse it |
 | Handoff | After upload, the API sets the session to `processing`, and a FastAPI background task calls the AI service. The result is stored, and the status becomes `complete` or `failed`. The frontend polls |
 | Database | PostgreSQL. AI results in JSONB columns. Schema changes **only** through Alembic migrations |
-| Storage | Azure Blob in the cloud, MinIO locally, both behind one storage module in the backend (`backend/app/storage/`). Private buckets, temporary read links |
+| Storage | Azure Blob Storage in the cloud, Azurite (Microsoft's Azure Storage emulator) locally. One storage module in the backend (`backend/app/storage/`), built on the Azure Blob SDK, serves both. Private containers, temporary read links |
 | Auth and roles | Clerk handles identity only. The role (`patient` or `therapist`) lives in our `User` table. `GET /me` returns it. New users are auto-created as patients; therapists are promoted by the team |
 | Hosting | Azure Container Apps (scale to zero) for API and AI service. Images in GitHub Container Registry. Azure resources are set up by hand in the Portal and recorded in `infra/README.md` |
 | CI/CD | GitHub Actions. On PRs: lint, tests, image build. On merge to main: build and push images, run migrations as a Container Apps job, deploy. Azure login uses OIDC |
-| Local dev | Docker Compose runs Postgres, MinIO, the API, and the AI service |
+| Local dev | Docker Compose runs Postgres, Azurite, the API, and the AI service |
 
 **Core data model:** `User`, `TherapistPatient`, `Exercise`, `Plan`, `PlanExercise`, `Session`, `SessionResult`. Details in `backend/README.md`.
 
@@ -101,7 +101,7 @@ docs/                Specs, test data plan, security checklist, reports
 - Never use or generate real patient data. Only synthetic or open-source data.
 - Never commit videos. They live in the team OneDrive. The only exception is a small open-source clip in `ai/tests/fixtures/` whose license allows it.
 - Every backend route must check the token, the role, and ownership. A patient sees only their own data; a therapist sees only linked patients.
-- Storage stays private. Only `backend/app/storage/` talks to MinIO or Azure Blob, and only through short-lived links.
+- Storage stays private. Only `backend/app/storage/` talks to Azure Blob or Azurite, and only through short-lived links.
 - Do not log tokens, emails, or other personal data.
 - Describe the system as "HIPAA-ready," never "HIPAA compliant."
 

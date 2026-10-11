@@ -23,6 +23,11 @@ dist/
 *.mkv
 # Exception: small licensed test clips
 !ai/tests/fixtures/*.mp4
+# Azurite data files (local blob storage), which hold uploaded videos
+__blobstorage__/
+__queuestorage__/
+__azurite_db_*__.json
+AzuriteConfig
 
 # Editors and OS
 .vscode/

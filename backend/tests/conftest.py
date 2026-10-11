@@ -1,4 +1,4 @@
-"""Shared test setup: a real Postgres test database and a fake Clerk.
+"""Shared test setup: a real Postgres test database, real Azurite storage, a fake Clerk.
 
 Tests never call Clerk. FakeClerk signs session tokens with a key made here and answers
 the two network calls the Clerk SDK makes, so the SDK still checks every token for real.
@@ -8,6 +8,7 @@ the two network calls the Clerk SDK makes, so the SDK still checks every token f
 # ruff: noqa: E402
 
 import os
+import uuid
 
 WEB_APP_ORIGIN = "http://localhost:5173"
 
@@ -18,6 +19,12 @@ os.environ["DATABASE_URL"] = os.environ.get(
 )
 os.environ["CLERK_SECRET_KEY"] = "sk_test_fake"
 os.environ["CLERK_AUTHORIZED_PARTIES"] = WEB_APP_ORIGIN
+# Always the test storage (Azurite by default), never STORAGE_CONNECTION_STRING from
+# your shell. Each run gets a new container and deletes it at the end.
+os.environ["STORAGE_CONNECTION_STRING"] = os.environ.get(
+    "TEST_STORAGE_CONNECTION_STRING", "UseDevelopmentStorage=true"
+)
+os.environ["STORAGE_CONTAINER"] = f"test-{uuid.uuid4().hex}"
 
 import time
 from collections.abc import Iterator
@@ -25,10 +32,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import jwt
 import pytest
 from alembic import command
 from alembic.config import Config
+from azure.storage.blob import BlobServiceClient
 from clerk_backend_api import Clerk
 from clerk_backend_api.security import verifytoken
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -41,6 +50,7 @@ from app.auth.clerk import get_clerk
 from app.db import engine
 from app.main import app
 from app.models import Base
+from app.storage.blob import Storage, get_storage
 
 SIGNING_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 KEY_ID = "test-key"
@@ -137,3 +147,35 @@ def clerk(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeClerk]:
 @pytest.fixture
 def client(db: Session, clerk: FakeClerk) -> TestClient:
     return TestClient(app)
+
+
+@pytest.fixture(scope="session")
+def blob_service() -> BlobServiceClient:
+    """A direct client for the test storage, to check what the app did."""
+    service = BlobServiceClient.from_connection_string(
+        os.environ["STORAGE_CONNECTION_STRING"]
+    )
+    # Tests create a public container and throwaway files, so never run them on a real
+    # storage account. Azurite's built-in account is devstoreaccount1.
+    if service.account_name != "devstoreaccount1":
+        pytest.fail(
+            "Storage tests run only against Azurite (account devstoreaccount1). See "
+            "Testing in backend/README.md.",
+            pytrace=False,
+        )
+    try:
+        httpx.get(service.url, timeout=5)  # any HTTP answer means it is running
+    except httpx.TransportError:
+        pytest.fail(
+            f"Test storage not reachable at {service.primary_hostname}. Start Azurite: "
+            "see Testing in backend/README.md.",
+            pytrace=False,
+        )
+    return service
+
+
+@pytest.fixture(scope="session")
+def storage(blob_service: BlobServiceClient) -> Iterator[Storage]:
+    """The app's storage, on this run's own container, which is deleted at the end."""
+    yield get_storage()
+    blob_service.delete_container(os.environ["STORAGE_CONTAINER"])
