@@ -17,6 +17,8 @@ Filled in during Sprint 2 (task SCRUM-46).
 | Frontend | Static Web Apps | | |
 | Migrations | Container Apps job | | Runs Alembic on each deploy |
 
+Local development uses Azurite, the Azure Storage emulator, instead of a storage account. Azurite has no lifecycle rules, so the 30-day delete rule exists only in Azure.
+
 ## Deploys
 
 - **Pull requests:** GitHub Actions runs lint, tests, and image builds.

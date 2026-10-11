@@ -30,7 +30,7 @@ flowchart LR
 | [Backend](backend/README.md) | The only entry point. Checks identity, role, and ownership on every request | FastAPI, SQLAlchemy, Alembic |
 | [AI service](ai/README.md) | Turns a video into rep count, form score, and feedback. Not reachable from the internet | OpenCV, ffmpeg, MediaPipe Pose |
 | Database | Users, plans, sessions, and AI results (JSONB) | PostgreSQL |
-| Storage | Uploaded videos, private, deleted after 30 days | Azure Blob (MinIO locally) |
+| Storage | Uploaded videos, private, deleted after 30 days | Azure Blob (Azurite emulator locally) |
 | Auth | Sign-in only. Roles live in our database | Clerk |
 | [Hosting](infra/README.md) | API and AI service as containers, frontend as a static site | Azure Container Apps, Azure Static Web Apps |
 
