@@ -18,6 +18,18 @@ src/
     therapist/  Patients, plan builder, patient detail, progress
 ```
 
+## Run locally
+
+Requires Node 22.12+.
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+The dev server starts at `http://localhost:5173`.
+
 ## Sign-in and roles
 
 1. The user signs in with Clerk.
@@ -39,12 +51,12 @@ The frontend never decides access on its own. The backend checks every request; 
 
 ## Screens
 
-| Patient | Therapist |
-| --- | --- |
-| My plan (assigned exercises) | Patient list and link a patient |
-| Upload with recording tips | Plan builder |
-| Result and history | Patient detail: sessions and results |
-| | Progress chart per exercise |
+| Patient                      | Therapist                            |
+| ---------------------------- | ------------------------------------ |
+| My plan (assigned exercises) | Patient list and link a patient      |
+| Upload with recording tips   | Plan builder                         |
+| Result and history           | Patient detail: sessions and results |
+|                              | Progress chart per exercise          |
 
 ## Config
 
@@ -53,3 +65,11 @@ Environment variables in `frontend/.env` (see `.env.example` in this folder): AP
 ## Tooling
 
 npm. Lint with ESLint, format with Prettier.
+
+- `npm run dev`: start local Vite development server at `http://localhost:5173`
+- `npm run build`: typecheck with `tsc` and create production bundle in `dist/`
+- `npm run preview`: preview production bundle locally
+- `npm run lint`: run ESLint checks across codebase
+- `npm run lint:fix`: run ESLint with autofix
+- `npm run format`: format code using Prettier
+- `npm run format:check`: verify formatting with Prettier
