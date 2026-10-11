@@ -20,7 +20,7 @@ src/
 
 ## Run locally
 
-Requires Node 22.12+.
+Requires Node 22.13+ (ESLint 10 needs it).
 
 ```bash
 cd frontend
@@ -64,7 +64,7 @@ Environment variables in `frontend/.env` (see `.env.example` in this folder): AP
 
 ## Tooling
 
-npm. Lint with ESLint, format with Prettier.
+npm. Lint with ESLint 10 (with `typescript-eslint` and the React hooks plugin's recommended rules), format with Prettier. The React hooks rules also catch common React mistakes, such as setting state directly inside an effect. If one of them gets in the way, ask the team before turning it off in `eslint.config.js`.
 
 - `npm run dev`: start local Vite development server at `http://localhost:5173`
 - `npm run build`: typecheck with `tsc` and create production bundle in `dist/`
@@ -73,3 +73,14 @@ npm. Lint with ESLint, format with Prettier.
 - `npm run lint:fix`: run ESLint with autofix
 - `npm run format`: format code using Prettier
 - `npm run format:check`: verify formatting with Prettier
+
+## Pull request CI
+
+The shared workflow in `/.github/workflows/pr-ci.yml` runs two web checks on every pull request, next to the API and AI checks. Both install with `npm ci` on Node 22:
+
+- `Web lint`: ESLint (`npm run lint`) and Prettier (`npm run format:check`).
+- `Web build`: `npm run build`, which type-checks the code with TypeScript (`tsc -b`) and then builds the production bundle with Vite.
+
+Run the same three commands before you push. If `format:check` fails, `npm run format` fixes it.
+
+Keep the job names stable: the repository ruleset matches checks by name (see `backend/README.md`, Required checks on main).

@@ -160,3 +160,47 @@ jobs:
             docker logs ai
             exit 1
           fi
+
+  # The web app's checks (frontend/README.md, Pull request CI).
+  web-lint:
+    name: Web lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          # The Node version frontend/README.md asks for (22.13 or newer).
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+
+  web-build:
+    name: Web build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      # "npm run build" first type-checks the code with TypeScript (tsc -b), then
+      # makes the production bundle with Vite, so a type error fails this check.
+      - name: Typecheck and build
+        run: npm run build
