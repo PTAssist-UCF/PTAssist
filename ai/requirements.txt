@@ -1,0 +1,10 @@
+# Runtime dependencies (installed in the Docker image). Pin exact versions.
+# MediaPipe, OpenCV, and NumPy use the same versions as the AI team's prototype.
+fastapi==0.142.2
+mediapipe==1.0.1
+numpy==2.5.2
+# The full OpenCV build, because MediaPipe requires this exact package. Do not add
+# opencv-python-headless next to it: both install the same cv2 folder, and the second
+# one overwrites the first.
+opencv-contrib-python==5.0.0.93
+uvicorn==0.54.0

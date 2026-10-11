@@ -254,7 +254,7 @@ Every route needs a test that rejects the wrong role and the wrong owner.
 
 The shared workflow in `/.github/workflows/pr-ci.yml` runs on every pull request,
 including documentation-only changes, so required checks are never skipped by a
-path filter. It provides three checks:
+path filter. It provides three API checks:
 
 - `API lint`: ruff lint and formatting checks.
 - `API tests`: pytest with Python 3.12 and `requirements-dev.txt`.
@@ -267,17 +267,17 @@ port 5433, with `TEST_DATABASE_URL` pointing at it, and
 `mcr.microsoft.com/azure-storage/azurite:3.37.0` on port 10000, with
 `TEST_STORAGE_CONNECTION_STRING` set to `UseDevelopmentStorage=true`. The Azurite
 image has no health check, so a step waits until it answers before pytest starts.
-The AI team can add its own job to this workflow in SCRUM-26 without renaming the
-API checks.
+The same workflow also runs the AI service's checks (`AI lint`, `AI tests`, and
+`AI image build`), described in `ai/README.md`.
 
 ### Required checks on main
 
 `main` is protected by the `trunk-based` repository ruleset (**Settings > Rules >
 Rulesets**), not a classic branch protection rule. It requires a pull request with
 1 approving review and allows squash merges only. Its **Require status checks to
-pass** rule lists `API lint`, `API tests`, and `API image build` from GitHub
-Actions, so a failing check blocks merging. Branches do not need to be up to date
-with `main` before merging.
+pass** rule lists `API lint`, `API tests`, `API image build`, `AI lint`,
+`AI tests`, and `AI image build` from GitHub Actions, so a failing check blocks
+merging. Branches do not need to be up to date with `main` before merging.
 
 Keep the job names stable: the ruleset matches checks by name, so a renamed or
 removed job leaves every pull request waiting for a check that never reports. When

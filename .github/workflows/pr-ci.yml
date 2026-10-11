@@ -89,3 +89,74 @@ jobs:
           persist-credentials: false
       - name: Build API image (no push)
         run: docker build --tag ptassist-api:ci ./backend
+
+  # The AI service's checks (ai/README.md, Pull request CI).
+  ai-lint:
+    name: AI lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ai
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ai/requirements*.txt
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m ruff check .
+      - run: python -m ruff format --check .
+
+  ai-tests:
+    name: AI tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ai
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ai/requirements*.txt
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pytest
+
+  ai-image:
+    name: AI image build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build AI image (no push)
+        run: docker build --tag ptassist-ai:ci ./ai
+      # A missing system library only shows up inside the image, so load the video
+      # libraries there and run ffmpeg once. Importing MediaPipe does not load its
+      # native code; creating a mediapipe.Image object does, so that line fails if
+      # MediaPipe's system libraries are missing.
+      - name: Check OpenCV, MediaPipe, and ffmpeg in the image
+        run: |
+          docker run --rm ptassist-ai:ci python -c "
+          import cv2, mediapipe, numpy
+          mediapipe.Image(image_format=mediapipe.ImageFormat.SRGB, data=numpy.zeros((8, 8, 3), numpy.uint8))
+          print('OpenCV', cv2.__version__, 'MediaPipe', mediapipe.__version__)
+          "
+          docker run --rm ptassist-ai:ci ffmpeg -hide_banner -version
+      # Start the image the way Compose and Azure will, and wait until /health answers.
+      - name: Start the image and call /health
+        run: |
+          docker run --detach --name ai --publish 8001:8001 ptassist-ai:ci
+          if ! timeout 60 bash -c 'until curl -sf http://127.0.0.1:8001/health; do sleep 1; done'; then
+            docker logs ai
+            exit 1
+          fi
