@@ -14,6 +14,7 @@ venv/
 # Node
 node_modules/
 dist/
+*.tsbuildinfo
 
 # Videos: keep them in OneDrive, not git
 *.mp4
