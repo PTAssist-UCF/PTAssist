@@ -10,10 +10,15 @@ WORKDIR /app
 
 # Programs and system libraries that pip can't install:
 # - ffmpeg: the program that reads and converts videos (rotation, frame rate, size).
-# - libgl1, libglib2.0-0t64: libraries the OpenCV package needs to load at all
-#   (without them, `import cv2` fails).
+# - libgl1, libglib2.0-0t64, libxcb1: OpenCV needs these to load at all. Without
+#   them `import cv2` fails, and so does `import mediapipe`, which imports OpenCV.
+# - libegl1, libgles2: MediaPipe's own code needs these to start, even on the CPU
+#   with no graphics card. Without them, creating a pose model fails.
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ffmpeg libgl1 libglib2.0-0t64 \
+    && apt-get install --yes --no-install-recommends \
+        ffmpeg \
+        libgl1 libglib2.0-0t64 libxcb1 \
+        libegl1 libgles2 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

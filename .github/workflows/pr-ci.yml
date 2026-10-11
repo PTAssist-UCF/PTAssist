@@ -141,10 +141,15 @@ jobs:
       - name: Build AI image (no push)
         run: docker build --tag ptassist-ai:ci ./ai
       # A missing system library only shows up inside the image, so load the video
-      # libraries there and run ffmpeg once.
+      # libraries there and run ffmpeg once. Importing MediaPipe does not load its
+      # native code; making an image does.
       - name: Check OpenCV, MediaPipe, and ffmpeg in the image
         run: |
-          docker run --rm ptassist-ai:ci python -c "import cv2, mediapipe; print('OpenCV', cv2.__version__, 'MediaPipe', mediapipe.__version__)"
+          docker run --rm ptassist-ai:ci python -c "
+          import cv2, mediapipe, numpy
+          mediapipe.Image(image_format=mediapipe.ImageFormat.SRGB, data=numpy.zeros((8, 8, 3), numpy.uint8))
+          print('OpenCV', cv2.__version__, 'MediaPipe', mediapipe.__version__)
+          "
           docker run --rm ptassist-ai:ci ffmpeg -hide_banner -version
       # Start the image the way Compose and Azure will, and wait until /health answers.
       - name: Start the image and call /health

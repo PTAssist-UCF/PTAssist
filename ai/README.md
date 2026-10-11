@@ -46,7 +46,7 @@ docker build -t ptassist-ai ai              # from the repo root
 docker run --rm -p 8001:8001 ptassist-ai    # http://localhost:8001/health
 ```
 
-The image starts from `python:3.12-slim`, installs ffmpeg and the system libraries OpenCV needs with `apt-get`, then installs `requirements.txt` with pip. It runs as a non-root user. The `Dockerfile` explains each step.
+The image starts from `python:3.12-slim`, installs ffmpeg and the system libraries OpenCV and MediaPipe need with `apt-get`, then installs `requirements.txt` with pip. It runs as a non-root user. The `Dockerfile` explains each step.
 
 ### In Docker Compose (SCRUM-19)
 
@@ -147,6 +147,6 @@ The shared workflow in `/.github/workflows/pr-ci.yml` runs three AI checks on ev
 
 - `AI lint`: ruff lint and formatting checks.
 - `AI tests`: pytest with Python 3.12 and `requirements-dev.txt`.
-- `AI image build`: builds the `Dockerfile` without pushing an image. Then, inside the image, it loads OpenCV and MediaPipe and runs ffmpeg, so a missing system library fails the check. Last, it starts the image and waits for `/health` to answer.
+- `AI image build`: builds the `Dockerfile` without pushing an image. Then, inside the image, it loads OpenCV and MediaPipe (including MediaPipe's native code) and runs ffmpeg, so a missing system library fails the check. Last, it starts the image and waits for `/health` to answer.
 
 Keep the job names stable: the repository ruleset matches checks by name (see `backend/README.md`, Required checks on main).
