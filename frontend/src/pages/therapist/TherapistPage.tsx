@@ -34,6 +34,7 @@ export default function TherapistPage() {
           <Button variant="filled" color="teal" size="sm">
             + Link New Patient
           </Button>
+          {/* TODO: SCRUM-34 - replace placeholder button with role routing */}
           <Button component={Link} to="/patient" variant="light" color="teal" size="sm">
             Switch to Patient View
           </Button>
@@ -98,4 +99,3 @@ export default function TherapistPage() {
     </Container>
   );
 }
-

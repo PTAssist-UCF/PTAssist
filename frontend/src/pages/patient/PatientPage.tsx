@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import {
   Container,
   Title,
@@ -13,29 +12,8 @@ import {
   Box,
 } from '@mantine/core';
 import { Link } from 'react-router-dom';
-import PatientLoginMock from './PatientLoginMock';
 
 export default function PatientPage() {
-  const [showLoginMock, setShowLoginMock] = useState(false);
-
-  if (showLoginMock) {
-    return (
-      <Box>
-        <Paper p="xs" withBorder>
-          <Group justify="space-between">
-            <Text size="sm" c="dimmed">
-              Previewing Patient Login Mockup
-            </Text>
-            <Button size="xs" variant="subtle" onClick={() => setShowLoginMock(false)}>
-              Back to Patient Dashboard
-            </Button>
-          </Group>
-        </Paper>
-        <PatientLoginMock />
-      </Box>
-    );
-  }
-
   return (
     <Container size="lg" py="xl">
       <Group justify="space-between" mb="xl">
@@ -47,14 +25,10 @@ export default function PatientPage() {
             Patient Portal
           </Text>
         </Box>
-        <Group>
-          <Button variant="default" size="sm" onClick={() => setShowLoginMock(true)}>
-            View Login Mockup
-          </Button>
-          <Button component={Link} to="/therapist" variant="light" color="teal" size="sm">
-            Switch to Therapist View
-          </Button>
-        </Group>
+        {/* TODO: SCRUM-34 - replace placeholder button with role routing */}
+        <Button component={Link} to="/therapist" variant="light" color="teal" size="sm">
+          Switch to Therapist View
+        </Button>
       </Group>
 
       <Stack gap="lg">
@@ -121,4 +95,3 @@ export default function PatientPage() {
     </Container>
   );
 }
-

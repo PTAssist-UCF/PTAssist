@@ -18,6 +18,18 @@ src/
     therapist/  Patients, plan builder, patient detail, progress
 ```
 
+## Run locally
+
+Requires Node 22.12+.
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+The dev server starts at `http://localhost:5173`.
+
 ## Sign-in and roles
 
 1. The user signs in with Clerk.
