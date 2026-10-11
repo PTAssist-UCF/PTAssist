@@ -1,0 +1,6 @@
+# Local development and CI: runtime dependencies plus test and lint tools.
+-r requirements.txt
+# FastAPI's TestClient needs httpx2 (with the older httpx it warns on every run).
+httpx2==2.13.1
+pytest==9.1.1
+ruff==0.16.9
