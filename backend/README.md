@@ -4,7 +4,7 @@ FastAPI service. It is the only entry point into PTAssist: the frontend talks on
 
 ## Stack
 
-FastAPI, SQLAlchemy, Alembic, PostgreSQL (psycopg 3 driver), Clerk's Python SDK (`clerk-backend-api`), pytest, ruff. Runtime dependencies in `requirements.txt`; test and lint tools in `requirements-dev.txt`.
+FastAPI, SQLAlchemy, Alembic, PostgreSQL (psycopg 3 driver), Clerk's Python SDK (`clerk-backend-api`), the Azure Blob SDK (`azure-storage-blob`), pytest, ruff. Runtime dependencies in `requirements.txt`; test and lint tools in `requirements-dev.txt`.
 
 ## Layout
 
@@ -17,7 +17,7 @@ app/
   schemas/   Request and response models (Pydantic)
   models/    Database tables (SQLAlchemy). Base class in base.py
   auth/      Clerk token check, current user, role and ownership checks
-  storage/   One module for video storage (MinIO locally, Azure Blob in the cloud)
+  storage/   Video storage: upload, temporary read links, delete (Azurite locally, Azure Blob in the cloud)
   jobs/      Background task that calls the AI service
 migrations/  Alembic migrations (versions/ holds one file per migration)
 tests/
@@ -27,7 +27,7 @@ Dockerfile   API image, also used to run migrations
 
 ## Run locally
 
-Needs Python 3.12 and a Postgres database. Run these from `backend/`:
+Needs Python 3.12, a Postgres database, and Azurite for storage (see Testing). Run these from `backend/`:
 
 ```bash
 python -m venv .venv
@@ -39,7 +39,7 @@ set -a; source ../.env; set +a   # load the settings into this shell (macOS/Linu
 alembic upgrade head
 uvicorn app.main:app --reload    # http://localhost:8000/health and /docs
 
-pytest                           # needs the test database, see Testing
+pytest                           # needs the test database and Azurite, see Testing
 ruff check . && ruff format --check .
 ```
 
@@ -52,7 +52,8 @@ To try `GET /me` in `/docs`, click **Authorize** and paste a Clerk session token
 ```bash
 docker build -t ptassist-api backend      # from the repo root
 docker run --rm -p 8000:8000 -e DATABASE_URL=<url> -e CLERK_SECRET_KEY=<key> \
-  -e CLERK_AUTHORIZED_PARTIES=<origins> ptassist-api
+  -e CLERK_AUTHORIZED_PARTIES=<origins> -e STORAGE_CONNECTION_STRING=<connection string> \
+  ptassist-api
 ```
 
 The same image runs migrations: `docker run --rm -e DATABASE_URL=<url> ptassist-api alembic upgrade head`.
@@ -153,7 +154,34 @@ Final paths are decided in each task.
 
 ## Storage
 
-All video access goes through `app/storage/`. Buckets are private. Other code never talks to MinIO or Azure Blob directly, and never makes a file public. Raw videos are deleted after 30 days.
+`app/storage/blob.py` is the only code that talks to storage. It uses the Azure Blob SDK against Azurite (Microsoft's Azure Storage emulator) locally and our Azure storage account in the cloud. There is one code path: only `STORAGE_CONNECTION_STRING` changes. Routes get it with the `get_storage` dependency, which tests can swap:
+
+```python
+storage: Annotated[Storage, Depends(get_storage)]  # a route parameter
+
+storage.upload(key, upload_file.file, "video/mp4")  # bytes or a binary file object
+link = storage.read_url(key)  # read-only link to this one file, for 15 minutes
+storage.delete(key)  # no error if it is already gone
+```
+
+- Files live in one private container, `STORAGE_CONTAINER`. The first `get_storage` call creates it without public access, and refuses a container that allows public access. Other code never talks to Azurite or Azure directly, and never makes a file public.
+- A key is the file's name in the container, such as `sessions/<session id>.mp4`: `/`-separated parts of letters, digits, `.`, `_`, and `-`. `upload`, `read_url`, and `delete` raise `ValueError` for any other key. `upload` replaces a file with the same key, so the API makes keys itself and never takes them from the request. Keys hold only ids, never names or emails: the Azure SDK logs request URLs, keys included, when INFO logging is on.
+- The API also sets `content_type` itself (a fixed video type, after checking the file), never copying the request's `Content-Type`. Read links serve the file with that type, so a type like `text/html` would let the file run as a web page.
+- `upload` reads a file object from its current position, 4 MB at a time, so it never holds a whole large video in memory.
+- Files are read only through `read_url`: a link (SAS URL) that can read that one file and nothing else. It expires after 15 minutes by default, and `read_url` refuses a longer lifetime (SCRUM-85). It starts 5 minutes in the past, so storage whose clock is slightly behind still accepts it. In Azure it works over HTTPS only; Azurite serves plain HTTP.
+- Anyone with a read link can read the file until it expires, so treat it as a secret. Never log a link, its query string, or file contents, and pass it only to the service that needs it.
+- If storage refuses the connection, calls fail within a few seconds (3 quick retries). If it does not answer, each of the 4 tries waits up to 5 seconds to connect, about 25 seconds in all. Once connected, each try waits up to 60 seconds for a reply (the SDK's default), which a slow 4 MB block upload can need. Either way the route returns `500`.
+- Raw videos are deleted after 30 days by a lifecycle rule on the Azure storage account (SCRUM-81). Azurite emulates only reading and writing files, not account settings like this rule, so it has no equivalent: local files stay until you delete them.
+
+### Storage in Docker Compose (SCRUM-19)
+
+`UseDevelopmentStorage=true` always means Azurite on `127.0.0.1:10000`, and inside a container `127.0.0.1` is the container itself. So an API container, including the `docker run` in Docker above, needs the full connection string with Azurite's address. In Docker Compose the API reaches Azurite by its service name:
+
+```
+DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=<Azurite key>;BlobEndpoint=http://azurite:10000/devstoreaccount1;
+```
+
+`<Azurite key>` is Azurite's well-known development key, published in Microsoft's Azurite documentation. It is not a real secret, but GitHub secret scanning flags it like any Azure storage key and may block the push. Keep it out of the repo: SCRUM-19 adds a separate variable for it to `/.env.example`, with a comment and no value (for example `COMPOSE_STORAGE_CONNECTION_STRING`), and the Compose file passes it to the API container as `STORAGE_CONNECTION_STRING`. Developers fill it in their own `/.env` (never committed). Do not reuse `STORAGE_CONNECTION_STRING` from `/.env` for this: it stays `UseDevelopmentStorage=true` for running the API on your machine. Read links then start with `http://azurite:10000/`, which the AI service container can reach too. The Azurite image's default command already listens on `0.0.0.0`.
 
 ## Config
 
@@ -164,9 +192,14 @@ Read from environment variables (see `/.env.example`): database URL, Clerk setti
 | `DATABASE_URL` | API, Alembic | Postgres URL. Must use the `postgresql+psycopg://` scheme so SQLAlchemy picks the psycopg 3 driver |
 | `CLERK_SECRET_KEY` | API | Clerk secret key, to check tokens and look up new users' emails. Secret. See Clerk settings |
 | `CLERK_AUTHORIZED_PARTIES` | API | Web app origins allowed to call the API, comma-separated. Empty skips the origin check, so set it everywhere |
+| `STORAGE_CONNECTION_STRING` | API | Storage account to use. `UseDevelopmentStorage=true` locally (Azurite on `127.0.0.1:10000`). In Azure, the storage account's connection string: it holds the account key, so it is a secret. See Storage |
+| `STORAGE_CONTAINER` | API | Private blob container for videos. Default `videos`. Created if missing |
 | `TEST_DATABASE_URL` | pytest | The test database. See Testing |
+| `TEST_STORAGE_CONNECTION_STRING` | pytest | The test storage, by default `UseDevelopmentStorage=true`. See Testing |
 
-Alembic only needs `DATABASE_URL`. Without `CLERK_SECRET_KEY` the API still starts, but every route that needs sign-in fails with `500`.
+Alembic only needs `DATABASE_URL`. Without `CLERK_SECRET_KEY` the API still starts, but every route that needs sign-in fails with `500`. Without `STORAGE_CONNECTION_STRING` it also starts, but anything that uses storage fails with `500`.
+
+A connection string contains `;`, so in `/.env` wrap any value other than `UseDevelopmentStorage=true` in double quotes, or `source` splits it.
 
 ## Testing
 
@@ -181,6 +214,31 @@ docker run -d --name ptassist-test-db -p 5433:5432 \
 ```
 
 After a reboot, run `docker start ptassist-test-db`. Without Docker, create an empty database in any local Postgres 17 and set `TEST_DATABASE_URL` to it.
+
+Storage tests run against real Azurite, never Azure: `TEST_STORAGE_CONNECTION_STRING`, by default `UseDevelopmentStorage=true` (Azurite on `127.0.0.1:10000`). Tests always use it in place of `STORAGE_CONNECTION_STRING`, and fail for any account other than Azurite's `devstoreaccount1`. Each run creates its own container (`test-<random>`) and deletes it at the end. Storage tests do not need Postgres. If Azurite is not running, they fail with a message that points here.
+
+Start Azurite once with Docker (blob service only):
+
+```bash
+docker run -d --name ptassist-test-storage -p 10000:10000 \
+  mcr.microsoft.com/azure-storage/azurite:3.37.0 azurite-blob --blobHost 0.0.0.0
+```
+
+After a reboot, run `docker start ptassist-test-storage`. Without Docker, run it with Node.js 22 or newer and leave it open in its own terminal. `--inMemoryPersistence` keeps it from writing files, uploaded videos included, into the current folder (`/.gitignore` ignores those files in case you leave it out):
+
+```bash
+npx --yes --package=azurite@3.37.0 azurite-blob --inMemoryPersistence
+```
+
+Keep the Azurite version and the `azure-storage-blob` pin in `requirements.txt` in step. Azurite refuses API versions newer than it knows, so a newer SDK alone fails every storage test with "The API version ... is not supported by Azurite". Bump both together, here and in `/.github/workflows/pr-ci.yml`.
+
+Use the `storage` fixture for the app's storage, and `blob_service` (an Azure SDK client) to check what it did:
+
+```python
+def test_example(storage) -> None:
+    storage.upload("sessions/1.mp4", b"...", "video/mp4")
+    response = httpx.get(storage.read_url("sessions/1.mp4"))
+```
 
 Tests never call Clerk. `tests/conftest.py` signs tokens with its own key and fakes the SDK's two network calls (fetching Clerk's public keys and looking up a user), so the SDK still checks every token. Use the `client` and `clerk` fixtures:
 
@@ -203,10 +261,14 @@ path filter. It provides three checks:
 - `API image build`: builds `backend/Dockerfile` without pushing an image.
 
 The workflow uses read-only repository permissions and needs no repository secrets
-(tests fake Clerk). The `API tests` job runs a `postgres:17` service container on
-port 5433 and points `TEST_DATABASE_URL` at it, the same setup as the local test
-database. The AI team can add its own job to this
-workflow in SCRUM-26 without renaming the API checks.
+(tests fake Clerk and use Azurite's built-in development account). The `API tests`
+job runs two service containers, the same setup as the local tests: `postgres:17` on
+port 5433, with `TEST_DATABASE_URL` pointing at it, and
+`mcr.microsoft.com/azure-storage/azurite:3.37.0` on port 10000, with
+`TEST_STORAGE_CONNECTION_STRING` set to `UseDevelopmentStorage=true`. The Azurite
+image has no health check, so a step waits until it answers before pytest starts.
+The AI team can add its own job to this workflow in SCRUM-26 without renaming the
+API checks.
 
 ### Required checks on main
 

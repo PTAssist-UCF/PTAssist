@@ -1,5 +1,9 @@
 # Runtime dependencies (installed in the Docker image). Pin exact versions.
 alembic==1.20.0
+# Azurite must accept the API version this SDK sends: 12.31.0 sends 2026-10-06, which
+# Azurite 3.37.0 refuses. Bump it together with the Azurite version in
+# .github/workflows/pr-ci.yml and backend/README.md (Testing).
+azure-storage-blob==12.30.2
 clerk-backend-api==7.0.0
 fastapi==0.142.2
 httpx==0.28.1
