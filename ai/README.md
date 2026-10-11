@@ -51,17 +51,13 @@ docker run --rm -p 8001:8001 ptassist-ai    # http://localhost:8001/health
 
 The image starts from `python:3.12-slim-trixie` (Debian 13), installs ffmpeg and the system libraries OpenCV and MediaPipe need with `apt-get`, then installs `requirements.txt` with pip. It runs as a non-root user. The `Dockerfile` explains each step.
 
-### In Docker Compose (SCRUM-19)
+### In Docker Compose
 
-- The service listens on port 8001 inside its container. Other containers reach it by its Compose service name, for example `http://ai:8001`; that is the API's `AI_SERVICE_URL` in Compose.
-- The image has no `curl`, so a Compose health check uses Python:
+`/compose.yaml` runs this image as the `ai` service, on port 8001 (see the root README, Getting started). After you change the code, rebuild it with `docker compose up --build`.
 
-  ```yaml
-  healthcheck:
-    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
-  ```
-
-- In Compose, video read links start with `http://azurite:10000/`, which this container can reach (see `backend/README.md`, Storage in Docker Compose).
+- Other containers reach it at `http://ai:8001`, which is the API's `AI_SERVICE_URL` in Compose.
+- Its health check calls `/health` with Python, because the image has no `curl`.
+- In Compose, video read links start with `http://azurite:10000/`, which this container can open (see `backend/README.md`, Storage in Docker Compose).
 
 ## Pipeline
 
