@@ -10,17 +10,22 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "generate:api": "orval"
   },
   "dependencies": {
     "@mantine/core": "^9.7.2",
     "@mantine/hooks": "^9.7.2",
+    "@tanstack/react-query": "^5.104.2",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-router-dom": "^7.18.4"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^22.13.4",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
@@ -30,12 +35,15 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.7",
     "globals": "^17.13.0",
+    "jsdom": "^29.1.1",
+    "orval": "^8.41.0",
     "postcss": "^8.5.3",
     "postcss-preset-mantine": "^1.18.0",
     "postcss-simple-vars": "^7.0.1",
     "prettier": "^3.5.1",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.24.1",
-    "vite": "^8.3.4"
+    "vite": "^8.3.4",
+    "vitest": "^5.0.3"
   }
 }
