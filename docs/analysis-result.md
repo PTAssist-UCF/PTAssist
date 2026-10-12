@@ -225,7 +225,7 @@ Results are saved in the database and kept, so a result saved before a change mu
 - **Do not rename or remove fields, or change their types.** If that is ever unavoidable, the same pull request needs an Alembic migration that rewrites the saved results.
 - **Adding an error code is fine:** add it to `ErrorCode` and `ERROR_MESSAGES` (a test checks every code has a message). Removing or renaming a code needs the migration.
 - **New validation rules** must still accept every result already saved.
-- Then copy the file to the backend, update this page and the examples, and, once the API returns results (SCRUM-64), regenerate the frontend's Orval hooks.
+- Then copy the file to the backend, update this page and the examples, and, once the API returns results (SCRUM-64), regenerate the frontend's hooks (`npm run generate:api`, see `frontend/README.md`, Talking to the API).
 
 ## How the backend stores it
 
