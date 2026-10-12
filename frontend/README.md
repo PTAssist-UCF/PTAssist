@@ -46,8 +46,10 @@ The frontend never decides access on its own. The backend checks every request; 
 ## Upload and results
 
 1. The patient picks or records a video for an assigned exercise and uploads it.
-2. The session starts as `processing`. The page polls the status every few seconds.
-3. On `complete`, show reps, form score, and feedback. On `failed`, show the reason and offer a re-upload.
+2. The session starts as `processing`. The page polls the status every few seconds, and gives up after a timeout at least as long as the backend's cutoff for sessions stuck in `processing` (SCRUM-66), so it never gives up before the backend does (see [Clip limits and timing](../docs/analysis-result.md#clip-limits-and-timing)).
+3. On `complete`, show `rep_count` (or `hold_seconds` for a hold exercise such as the plank), the form score, and feedback. On `failed`, show `error_message`, and offer a re-upload unless `error_code` is `unknown_exercise` (uploading again would fail the same way).
+
+The result's fields, how to show them (score bands, zero reps, holds, sides), and the failure codes are in [`docs/analysis-result.md`](../docs/analysis-result.md). Sample results for building screens are in `docs/analysis-result-examples/`.
 
 ## Screens
 

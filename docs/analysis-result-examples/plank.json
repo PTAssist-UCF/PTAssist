@@ -1,0 +1,32 @@
+{
+  "status": "complete",
+  "rep_count": null,
+  "hold_seconds": 22.0,
+  "form_score": 86,
+  "reps": [
+    {
+      "index": 1,
+      "start_seconds": 2.0,
+      "end_seconds": 24.0,
+      "side": null,
+      "score": 77,
+      "issues": [
+        { "code": "hips_sagging", "message": "Your hips dropped below your shoulders." }
+      ],
+      "metrics": { "good_form_seconds": 17.0 }
+    },
+    {
+      "index": 2,
+      "start_seconds": 27.5,
+      "end_seconds": 40.0,
+      "side": null,
+      "score": 100,
+      "issues": [],
+      "metrics": { "good_form_seconds": 12.5 }
+    }
+  ],
+  "feedback": ["Squeeze your glutes to keep your hips level with your shoulders."],
+  "error_code": null,
+  "error_message": null,
+  "analyzer_version": "0.1.0"
+}
