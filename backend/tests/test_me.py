@@ -11,13 +11,18 @@ from clerk_backend_api.security import (
     verifytoken,
 )
 from cryptography.hazmat.primitives.asymmetric import rsa
+from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.auth import clerk as clerk_module
+from app.auth.clerk import MISSING_SECRET_KEY, get_clerk
 from app.auth.current_user import create_patient
+from app.main import app
 from app.models import Role, User
 
 OTHER_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+WEB_APP_ORIGIN = "http://localhost:5173"
 
 
 def count_users(db: Session) -> int:
@@ -149,6 +154,22 @@ def test_clerk_down_while_looking_up_the_email_gets_503(client, clerk, db) -> No
 
     assert response.status_code == 503
     assert count_users(db) == 0
+
+
+def test_missing_secret_key_gets_a_500_the_web_app_can_read(monkeypatch) -> None:
+    """A setup mistake: the answer says what is missing, and the browser can read it."""
+    monkeypatch.setattr(clerk_module, "CLERK_SECRET_KEY", "")
+    get_clerk.cache_clear()  # forget any Clerk client made earlier with a key
+    client = TestClient(app)  # no clerk fixture: the real get_clerk runs
+
+    response = client.get(
+        "/me", headers={"Authorization": "Bearer abc", "Origin": WEB_APP_ORIGIN}
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": MISSING_SECRET_KEY}
+    # A crashed request's answer has no CORS header, so the browser would hide it.
+    assert response.headers["access-control-allow-origin"] == WEB_APP_ORIGIN
 
 
 def test_account_without_an_email_gets_403(client, clerk, db) -> None:

@@ -77,6 +77,7 @@ In a second terminal, also in the repo root, `docker compose ps` should show all
 | Azurite (local blob storage) | `localhost:10000` |
 
 - Everything starts without `/.env`. Sign-in needs `CLERK_SECRET_KEY` (from the team), and storage needs `AZURITE_ACCOUNT_KEY` (see `/.env.example`).
+- The web app is not part of the stack: run it with `npm run dev` in `frontend/`. To sign in through it, see `frontend/README.md`, Try sign-in locally.
 - After you change code, run `docker compose up --build` again to rebuild.
 - `docker compose down` stops the stack and keeps the data. `docker compose down -v` also deletes the database and the stored files.
 - If `api` stops with "Can't locate revision", your database has a migration from another branch. `docker compose down -v` resets it (this deletes your local data).

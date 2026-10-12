@@ -101,7 +101,8 @@ On a user's first request, the API asks Clerk's Backend API for their primary em
 | --- | --- |
 | `401` | No bearer token, or the token is invalid, expired, or from another origin. `detail` says why |
 | `403` | First request from a Clerk account that has no email address. Nothing is saved |
-| `503` | Clerk could not be reached to check the token or look up the email. Nothing is saved; try again |
+| `503` | Clerk could not be reached to check the token or look up the email, or Clerk refused `CLERK_SECRET_KEY` (for example a mistyped or cut-off key). Nothing is saved; try again, or check the key |
+| `500` | `CLERK_SECRET_KEY` is not set on the API (a setup mistake). `detail` says so, and the web app shows it |
 
 Never log tokens or emails. The database engine hides query values (`hide_parameters`), so they also stay out of SQL logs and error messages.
 
@@ -119,8 +120,8 @@ The web app and the API run on different origins: `http://localhost:5173` and `h
 
 - **The allowed origins are the ones in `CLERK_AUTHORIZED_PARTIES`**, the same list sign-in checks, so there is one list of web app origins to keep up to date. A page on any other origin can't read the API's answers.
 - **Allowed methods and headers:** `GET`, `POST`, `PUT`, `PATCH`, and `DELETE`, with the headers `Authorization` and `Content-Type`. Cookies are not allowed, because the token travels in the `Authorization` header.
-- **Error answers reach the web app too:** a `401` arrives as a `401`, so the web app can send the user to sign in.
-- **If the browser says "Failed to fetch"**, or its console shows a CORS error, the page's origin is missing from `CLERK_AUTHORIZED_PARTIES`. Add it (comma-separated) and restart the API. In Azure, the list must hold the Static Web Apps URL (see `infra/README.md`). If the list is empty, no browser can call the API.
+- **Error answers reach the web app too:** a `401` arrives as a `401`, so the web app can send the user to sign in. This holds for every answer made with `HTTPException`. A crash is different: when a route raises any other error, the `500` it produces has no CORS headers, so the browser hides it and the web app only sees "Failed to fetch" (the error is in the API's log). So answer expected problems with `HTTPException`, as `get_clerk` does for a missing `CLERK_SECRET_KEY`.
+- **If the browser says "Failed to fetch"**, often with a CORS error in its console, either the API isn't running, the request crashed (see the API's log), or the page's origin is missing from `CLERK_AUTHORIZED_PARTIES`. For the last one, add it (comma-separated) and restart the API. In Azure, the list must hold the Static Web Apps URL (see `infra/README.md`). If the list is empty, no browser can call the API.
 - **CORS only limits browsers.** Other programs can still send requests, so every route still checks the token, the role, and ownership.
 
 `tests/test_cors.py` checks that the web app's origin is allowed, other origins are not, and error answers carry the CORS headers.
@@ -239,7 +240,7 @@ Read from environment variables (see `/.env.example`): database URL, Clerk setti
 | `TEST_STORAGE_CONNECTION_STRING` | pytest | The test storage, by default `UseDevelopmentStorage=true`. See Testing |
 | `AZURITE_ACCOUNT_KEY` | Docker Compose | Azurite's well-known key, for the `api` service's connection string. Not read by the API itself. See Storage in Docker Compose |
 
-Alembic only needs `DATABASE_URL`. Without `CLERK_SECRET_KEY` the API still starts, but every route that needs sign-in fails with `500`. Without `STORAGE_CONNECTION_STRING` it also starts, but anything that uses storage fails with `500`.
+Alembic only needs `DATABASE_URL`. Without `CLERK_SECRET_KEY` the API still starts (and logs a warning about it), but every route that needs sign-in fails with `500` and a `detail` that names the missing key (the web app shows it). Without `STORAGE_CONNECTION_STRING` it also starts, but anything that uses storage fails with `500`.
 
 A connection string contains `;`, so in `/.env` wrap any value other than `UseDevelopmentStorage=true` in double quotes, or `source` splits it.
 

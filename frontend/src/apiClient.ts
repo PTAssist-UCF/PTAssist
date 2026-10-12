@@ -34,14 +34,16 @@ export type ErrorType<Body> = ApiError<Body>;
 /** Returns the signed-in user's Clerk session token, or null when nobody is signed in. */
 type TokenGetter = () => Promise<string | null>;
 
-// Until sign-in exists (SCRUM-32), requests go out without a token.
+// Until ApiAuth sets Clerk's getter (and in tests that set none), requests go out
+// without a token.
 let getToken: TokenGetter = async () => null;
 
 /**
- * Tells apiFetch how to get the signed-in user's token. Sign-in (SCRUM-32) calls this
- * once with Clerk's getToken, from Clerk's useAuth() hook. Call it before any hook sends
- * its first request: while rendering a component that renders before the pages, not in
- * a useEffect of a wrapper around them (a wrapper's effects run after its children's).
+ * Tells apiFetch how to get the signed-in user's token. src/components/ApiAuth.tsx calls
+ * this with Clerk's getToken, from Clerk's useAuth() hook. It must run before any hook
+ * sends its first request: while rendering a component that renders before the pages,
+ * not in a useEffect of a wrapper around them (a wrapper's effects run after its
+ * children's).
  */
 export function setTokenGetter(getter: TokenGetter): void {
   getToken = getter;
