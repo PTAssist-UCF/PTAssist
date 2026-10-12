@@ -1,12 +1,12 @@
 # PTAssist
 
-AI-augmented remote physical therapy platform. A therapist assigns home exercises, the patient records a video of each one and uploads it, and the system counts reps, scores form, and gives feedback. The therapist reviews results and progress on a dashboard.
+AI-augmented remote physical therapy platform. A therapist assigns home exercises, the patient records a video of each one and uploads it, and the system counts reps (or times a hold, such as a plank), scores form, and gives feedback. The therapist reviews results and progress on a dashboard.
 
 UCF Senior Design, Group A19. Sponsor: Dr. Md Mahfuzur Rahaman.
 
 ## Scope
 
-**Proof of concept (Fall 2026):** web app for patients and therapists, video upload only, 5 exercises, synthetic and open-source data only.
+**Proof of concept (Fall 2026):** web app for patients and therapists, video upload only, 5 exercises ([names](docs/analysis-result.md#exercise-names)), synthetic and open-source data only.
 
 **Stretch goals (Spring 2027):** live feedback during an exercise, a mobile patient app, and a job queue for analysis. The proof of concept is built so these stay possible.
 
@@ -28,7 +28,7 @@ flowchart LR
 | --- | --- | --- |
 | [Frontend](frontend/README.md) | One web app with a patient side and a therapist side | React, Vite, TypeScript, Mantine, Clerk, Orval |
 | [Backend](backend/README.md) | The only entry point. Checks identity, role, and ownership on every request | FastAPI, SQLAlchemy, Alembic |
-| [AI service](ai/README.md) | Turns a video into rep count, form score, and feedback. Not reachable from the internet | OpenCV, ffmpeg, MediaPipe Pose |
+| [AI service](ai/README.md) | Turns a video into rep count (or hold time), form score, and feedback. Not reachable from the internet | OpenCV, ffmpeg, MediaPipe Pose |
 | Database | Users, plans, sessions, and AI results (JSONB) | PostgreSQL |
 | Storage | Uploaded videos, private, deleted after 30 days | Azure Blob (Azurite emulator locally) |
 | Auth | Sign-in only. Roles live in our database | Clerk |
@@ -36,12 +36,14 @@ flowchart LR
 
 ## How an upload works
 
-1. The patient uploads a video for an assigned exercise.
+1. The patient uploads a video, 3 seconds to 2 minutes long, for an assigned exercise.
 2. The backend stores it in private storage and marks the session `processing`.
 3. A background task sends the AI service the session id and a temporary link to the video.
 4. The AI service extracts body keypoints and scores the exercise.
-5. The backend saves the result and marks the session `complete` (or `failed`).
+5. The backend saves the result and marks the session `complete`, or `failed` with the reason.
 6. The frontend polls the session status and shows the result to the patient and therapist.
+
+The result's fields, the failure reasons, and the timing limits are described in [`docs/analysis-result.md`](docs/analysis-result.md).
 
 ## Repo layout
 

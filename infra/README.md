@@ -19,6 +19,8 @@ Filled in during Sprint 2 (task SCRUM-46).
 
 Local development uses Azurite, the Azure Storage emulator, instead of a storage account. Azurite has no lifecycle rules, so the 30-day delete rule exists only in Azure.
 
+**Request time limit:** Container Apps ingress ends any HTTP request after 240 seconds (4 minutes). This is Azure's limit, not one of our settings: Azure's docs say raising it needs premium ingress on a dedicated (paid) workload profile. It matters for the AI service, because the backend waits for `POST /analyze` in one request. So the backend's call timeout must be between 3 and 4 minutes, and a 2-minute clip must be analyzed in 3 minutes or less, counting a cold start (see [Clip limits and timing](../docs/analysis-result.md#clip-limits-and-timing)).
+
 ## Deploys
 
 - **Pull requests:** GitHub Actions runs lint, tests, and image builds.
