@@ -26,7 +26,7 @@ flowchart LR
 
 | Part | What it does | Tech |
 | --- | --- | --- |
-| [Frontend](frontend/README.md) | One web app with a patient side and a therapist side | React, Vite, TypeScript, Mantine, Clerk, Orval |
+| [Frontend](frontend/README.md) | One web app with a patient side and a therapist side | React, Vite, TypeScript, Mantine, Clerk, Orval, TanStack Query |
 | [Backend](backend/README.md) | The only entry point. Checks identity, role, and ownership on every request | FastAPI, SQLAlchemy, Alembic |
 | [AI service](ai/README.md) | Turns a video into rep count (or hold time), form score, and feedback. Not reachable from the internet | OpenCV, ffmpeg, MediaPipe Pose |
 | Database | Users, plans, sessions, and AI results (JSONB) | PostgreSQL |

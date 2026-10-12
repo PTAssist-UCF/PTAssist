@@ -10,7 +10,7 @@ Filled in during Sprint 2 (task SCRUM-46).
 
 | Resource | Azure service | Name | Key settings |
 | --- | --- | --- | --- |
-| API | Container Apps | | Public HTTPS, scale to zero |
+| API | Container Apps | | Public HTTPS, scale to zero. `CLERK_AUTHORIZED_PARTIES` = the Static Web Apps URL (sign-in and browser access) |
 | AI service | Container Apps | | Internal ingress only, scale to zero |
 | Database | PostgreSQL Flexible Server (B1ms) | | TLS required, firewall on |
 | Video storage | Storage account (Blob) | | Private container, 30-day delete rule |

@@ -175,7 +175,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          # The Node version frontend/README.md asks for (22.13 or newer).
+          # The Node version frontend/README.md asks for (22.18 or newer).
           node-version: '22'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
@@ -204,3 +204,5 @@ jobs:
       # makes the production bundle with Vite, so a type error fails this check.
       - name: Typecheck and build
         run: npm run build
+      # Vitest tests (npm test), such as src/apiClient.test.tsx.
+      - run: npm test

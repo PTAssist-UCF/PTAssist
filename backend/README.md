@@ -109,9 +109,21 @@ Never log tokens or emails. The database engine hides query values (`hide_parame
 
 - `CLERK_SECRET_KEY` is the development instance's secret key (`sk_test_...`) from the **API keys** page of the Clerk Dashboard. It gives full access to our Clerk instance: keep it in `/.env` locally and in an Azure secret in the cloud, never in code.
 - Users must sign up with an email address (Clerk Dashboard, **User & authentication**). The API needs it to create their row.
-- `CLERK_AUTHORIZED_PARTIES` lists the web app's origins: `http://localhost:5173` (the Vite dev server) locally, and the Static Web Apps URL in Azure.
+- `CLERK_AUTHORIZED_PARTIES` lists the web app's origins: `http://localhost:5173` (the Vite dev server) locally, and the Static Web Apps URL in Azure. It is also the list of origins that browsers may call the API from (see Browser access).
 
 Until the promote script exists (SCRUM-65), promote a local test account by hand: `UPDATE users SET role = 'therapist' WHERE email = '<email>';`
+
+### Browser access (CORS)
+
+The web app and the API run on different origins: `http://localhost:5173` and `http://localhost:8000` locally, and the Static Web Apps URL and the API's Container Apps URL in Azure. A browser only lets the web app read the API's answers if the API names the web app's origin as allowed. This is CORS, set up in `app/main.py`. Before a request that carries a token, the browser first asks with an `OPTIONS` request (a "preflight").
+
+- **The allowed origins are the ones in `CLERK_AUTHORIZED_PARTIES`**, the same list sign-in checks, so there is one list of web app origins to keep up to date. A page on any other origin can't read the API's answers.
+- **Allowed methods and headers:** `GET`, `POST`, `PUT`, `PATCH`, and `DELETE`, with the headers `Authorization` and `Content-Type`. Cookies are not allowed, because the token travels in the `Authorization` header.
+- **Error answers reach the web app too:** a `401` arrives as a `401`, so the web app can send the user to sign in.
+- **If the browser says "Failed to fetch"**, or its console shows a CORS error, the page's origin is missing from `CLERK_AUTHORIZED_PARTIES`. Add it (comma-separated) and restart the API. In Azure, the list must hold the Static Web Apps URL (see `infra/README.md`). If the list is empty, no browser can call the API.
+- **CORS only limits browsers.** Other programs can still send requests, so every route still checks the token, the role, and ownership.
+
+`tests/test_cors.py` checks that the web app's origin is allowed, other origins are not, and error answers carry the CORS headers.
 
 ## Data model
 
@@ -166,6 +178,8 @@ cp ai/app/analysis_contract.py backend/app/schemas/analysis_contract.py
 
 Final paths are decided in each task.
 
+Each route's function name becomes its operation id in the API description (`/openapi.json`), and the frontend's generated hooks are named after it: `def get_me` becomes `useGetMe()`. So give route functions clear names, and never reuse one; `tests/test_openapi.py` checks they are unique. Also give each router a tag, as in `routes/me.py` (`tags=["me"]`): the tag names the generated file (`src/api/me.ts`), and a route without one lands in `src/api/default.ts`. After changing the API, regenerate the frontend's hooks (see `frontend/README.md`, Talking to the API).
+
 | Area | Endpoint | Who |
 | --- | --- | --- |
 | Me | `GET /me` | Anyone signed in |
@@ -218,7 +232,7 @@ Read from environment variables (see `/.env.example`): database URL, Clerk setti
 | --- | --- | --- |
 | `DATABASE_URL` | API, Alembic | Postgres URL. Must use the `postgresql+psycopg://` scheme so SQLAlchemy picks the psycopg 3 driver |
 | `CLERK_SECRET_KEY` | API | Clerk secret key, to check tokens and look up new users' emails. Secret. See Clerk settings |
-| `CLERK_AUTHORIZED_PARTIES` | API | Web app origins allowed to call the API, comma-separated. Empty skips the origin check, so set it everywhere |
+| `CLERK_AUTHORIZED_PARTIES` | API | Web app origins, comma-separated. Tokens must come from one of them, and browsers may call the API only from them (CORS). Empty skips the token's origin check and blocks every browser, so set it everywhere |
 | `STORAGE_CONNECTION_STRING` | API | Storage account to use. `UseDevelopmentStorage=true` locally (Azurite on `127.0.0.1:10000`). In Azure, the storage account's connection string: it holds the account key, so it is a secret. See Storage |
 | `STORAGE_CONTAINER` | API | Private blob container for videos. Default `videos`. Created if missing |
 | `TEST_DATABASE_URL` | pytest | The test database. See Testing |
