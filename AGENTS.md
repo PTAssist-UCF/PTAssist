@@ -30,7 +30,7 @@ These decisions are final. **Do not change them, add alternatives, or introduce 
 
 | Area | Decision |
 | --- | --- |
-| Frontend | React SPA: Vite, TypeScript, Mantine, React Router, Clerk React SDK, Orval-generated API hooks. One app, patient and therapist sides split by role. Hosted on Azure Static Web Apps |
+| Frontend | React SPA: Vite, TypeScript, Mantine, React Router, Clerk React SDK, Orval-generated API hooks (TanStack Query). One app, patient and therapist sides split by role. Hosted on Azure Static Web Apps |
 | Backend API | FastAPI (Python), SQLAlchemy, Alembic. The **only** entry point into the system. Checks the Clerk token, role, and ownership on every request. Uploads go through the API |
 | AI service | Separate internal-only Python container. `POST /analyze` takes a session id, exercise, and a temporary video link. Uses OpenCV, ffmpeg, MediaPipe Pose, and rule-based scoring per exercise |
 | AI modules | Video-to-keypoints (`ai/app/keypoints/`) and keypoints-to-analysis (`ai/app/analysis/`) are separate. Analysis never touches video, so live feedback can reuse it |
@@ -84,9 +84,9 @@ compose.yaml         Local stack: Postgres, Azurite, the API, and the AI service
 - Type hints on public functions. Pydantic models for anything crossing a service boundary.
 
 **TypeScript (frontend):**
-- npm. ESLint and Prettier. Strict TypeScript.
+- npm. ESLint and Prettier. Strict TypeScript. Test with Vitest.
 - Mantine components before custom CSS.
-- API calls only through the generated Orval hooks in `src/api/`. If the API changes, regenerate them; do not hand-write fetch calls for existing endpoints.
+- API calls only through the generated Orval hooks in `src/api/`. If the API changes, regenerate them (`npm run generate:api`); do not hand-write fetch calls for existing endpoints. Requests go through `src/apiClient.ts`, which adds the token.
 
 **General:**
 - Keep it simple. Pick the simplest thing that works for the proof of concept.
