@@ -1,0 +1,42 @@
+{
+  "status": "complete",
+  "rep_count": 3,
+  "hold_seconds": null,
+  "form_score": 87,
+  "reps": [
+    {
+      "index": 1,
+      "start_seconds": 1.2,
+      "end_seconds": 3.9,
+      "side": null,
+      "score": 100,
+      "issues": [],
+      "metrics": { "min_knee_angle_degrees": 92.5 }
+    },
+    {
+      "index": 2,
+      "start_seconds": 4.4,
+      "end_seconds": 7.0,
+      "side": null,
+      "score": 70,
+      "issues": [{ "code": "knees_cave_in", "message": "Your knees moved inward." }],
+      "metrics": { "min_knee_angle_degrees": 95.0 }
+    },
+    {
+      "index": 3,
+      "start_seconds": 7.6,
+      "end_seconds": 9.3,
+      "side": null,
+      "score": 90,
+      "issues": [{ "code": "too_fast", "message": "This rep took less than 2 seconds." }],
+      "metrics": { "min_knee_angle_degrees": 101.0 }
+    }
+  ],
+  "feedback": [
+    "Push your knees out so they stay over your toes.",
+    "Slow down: take at least 2 seconds for each rep."
+  ],
+  "error_code": null,
+  "error_message": null,
+  "analyzer_version": "0.1.0"
+}

@@ -14,7 +14,7 @@ app/
   config.py  Settings from environment variables
   db.py      SQLAlchemy engine and the get_db session dependency
   routes/    HTTP endpoints, grouped by area
-  schemas/   Request and response models (Pydantic)
+  schemas/   Request and response models (Pydantic). analysis_contract.py is a copy, see Analysis results
   models/    Database tables (SQLAlchemy). Base class in base.py
   auth/      Clerk token check, current user, role and ownership checks
   storage/   Video storage: upload, temporary read links, delete (Azurite locally, Azure Blob in the cloud)
@@ -131,11 +131,11 @@ The web app and the API run on different origins: `http://localhost:5173` and `h
 | --- | --- |
 | `User` (`users`) | Clerk id, email, role (`patient` or `therapist`), created time |
 | `TherapistPatient` | Which therapist is linked to which patient |
-| `Exercise` | The exercise library (5 exercises for the proof of concept) |
+| `Exercise` | The exercise library (5 exercises for the proof of concept): its name in the API, such as `squat`, and whether it is done in reps or held (the plank) |
 | `Plan` | A therapist's plan for one patient |
-| `PlanExercise` | An exercise in a plan, with targets (reps, sets, frequency) |
-| `Session` | One uploaded video for a plan exercise, with status |
-| `SessionResult` | The AI result for a session (JSONB) |
+| `PlanExercise` | An exercise in a plan, with targets (reps, sets, frequency, or a hold time in seconds for a hold exercise) |
+| `Session` | One uploaded video (one set) for a plan exercise, with status |
+| `SessionResult` | The analysis result of a finished session, complete or failed (JSONB, see Analysis results) |
 
 Table names are plural snake_case (`users`), and primary keys are UUIDs (see `app/models/user.py`). The schema changes only through Alembic migrations. Never edit the database by hand, and never change a migration after it is merged.
 
@@ -146,12 +146,33 @@ upload -> processing -> complete
                      -> failed (with a reason)
 ```
 
-1. `POST` upload: validate the file, store it, create the `Session` as `processing`.
+1. `POST` upload: validate the file (type, size, and length between `MIN_VIDEO_SECONDS` and `MAX_VIDEO_SECONDS` from `app/schemas/analysis_contract.py`, currently 3 seconds to 2 minutes; import them, don't hard-code them), store it, create the `Session` as `processing`. A file that fails these checks gets an HTTP error, and no session is created.
 2. A FastAPI background task creates a 15-minute read link and calls the AI service `POST /analyze`.
-3. The result is saved to `SessionResult` and the status becomes `complete`, or `failed` if anything goes wrong.
-4. Sessions stuck in `processing` too long are marked `failed`.
+3. The result is saved to `SessionResult`, and the session's status becomes the result's `status`: `complete` or `failed`.
+4. If there is no valid result, the backend saves a failed result itself: `analysis_unavailable` when the AI service could not be reached, answered with an error, or sent a result that does not match the contract, and `analysis_timed_out` when it did not answer in time.
+5. Sessions stuck in `processing` too long are also saved as failed, with `analysis_timed_out`.
 
-The frontend polls the session status. Later, a job queue can replace the background task without changing the API.
+A session's result is saved once: after a session is `complete` or `failed` it never changes, and a later answer for it is dropped.
+
+The AI service may take up to 3 minutes for a 2-minute clip, counting from a cold start. On Azure, Container Apps ends any HTTP request after 240 seconds, so the timeout in step 2 must be between 3 and 4 minutes (for example 230 seconds). The stuck cutoff in step 5 must be longer than that timeout, so the cleanup never fails a session the background task is still waiting on. See [Clip limits and timing](../docs/analysis-result.md#clip-limits-and-timing).
+
+The frontend polls the session status. Once it is `complete` or `failed`, the `SessionResult` has the details, including the failure reason. Later, a job queue can replace the background task without changing the API.
+
+## Analysis results
+
+A `SessionResult` holds one analysis result: the rep count (or hold time), form score, details for each rep, feedback, and the failure reason if it failed. Its shape, the error codes, and the rules behind it are described in [`docs/analysis-result.md`](../docs/analysis-result.md).
+
+The shape is defined by the Pydantic models in `app/schemas/analysis_contract.py`. **That file is an exact copy of `ai/app/analysis_contract.py`, which the AI service owns. Never edit the copy by hand.** To change the contract, edit the AI service's file, then copy it over from the repo root:
+
+```bash
+cp ai/app/analysis_contract.py backend/app/schemas/analysis_contract.py
+```
+
+`tests/test_analysis_contract.py` fails if the two files differ, and this check must pass before a pull request can merge. It also loads every example in `docs/analysis-result-examples/`. The backend's ruff skips the copy (`extend-exclude` in `pyproject.toml`), because the AI service's lint already checks the original.
+
+- Check every result from the AI service with `AnalysisResult.model_validate(...)` before saving it. An answer that does not match is saved as `analysis_unavailable`.
+- Record your own failures with `AnalysisResult.failed("analysis_timed_out", analyzer_version=None)` (or `"analysis_unavailable"`), so they have the same shape and the standard patient message.
+- Store the whole result in one JSONB column. Results are kept, so the contract only ever gains fields (see [Changing the contract](../docs/analysis-result.md#changing-the-contract)).
 
 ## Endpoints (draft)
 

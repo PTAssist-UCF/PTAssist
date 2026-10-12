@@ -1,0 +1,50 @@
+{
+  "status": "complete",
+  "rep_count": 4,
+  "hold_seconds": null,
+  "form_score": 96,
+  "reps": [
+    {
+      "index": 1,
+      "start_seconds": 1.0,
+      "end_seconds": 3.4,
+      "side": "left",
+      "score": 100,
+      "issues": [],
+      "metrics": { "max_leg_raise_degrees": 38.0 }
+    },
+    {
+      "index": 2,
+      "start_seconds": 3.9,
+      "end_seconds": 6.2,
+      "side": "left",
+      "score": 100,
+      "issues": [],
+      "metrics": { "max_leg_raise_degrees": 40.5 }
+    },
+    {
+      "index": 3,
+      "start_seconds": 8.1,
+      "end_seconds": 10.6,
+      "side": "right",
+      "score": 85,
+      "issues": [
+        { "code": "torso_lean", "message": "You leaned your upper body to the side." }
+      ],
+      "metrics": { "max_leg_raise_degrees": 31.0 }
+    },
+    {
+      "index": 4,
+      "start_seconds": 11.0,
+      "end_seconds": 13.5,
+      "side": "right",
+      "score": 100,
+      "issues": [],
+      "metrics": { "max_leg_raise_degrees": 35.5 }
+    }
+  ],
+  "feedback": ["Keep your upper body still and lift only your leg."],
+  "error_code": null,
+  "error_message": null,
+  "analyzer_version": "0.1.0"
+}

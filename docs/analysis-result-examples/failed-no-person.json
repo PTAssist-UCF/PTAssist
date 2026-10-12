@@ -1,0 +1,11 @@
+{
+  "status": "failed",
+  "rep_count": null,
+  "hold_seconds": null,
+  "form_score": null,
+  "reps": [],
+  "feedback": [],
+  "error_code": "no_person",
+  "error_message": "We couldn't find a person in your video. Make sure your whole body is in the frame.",
+  "analyzer_version": "0.1.0"
+}

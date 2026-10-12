@@ -2,6 +2,10 @@
 
 [tool.ruff]
 target-version = "py312"
+# app/schemas/analysis_contract.py is an exact copy of ai/app/analysis_contract.py.
+# Only the AI service's ruff checks and formats it, so the two services' ruff
+# settings or versions can differ without breaking the copy check.
+extend-exclude = ["app/schemas/analysis_contract.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]

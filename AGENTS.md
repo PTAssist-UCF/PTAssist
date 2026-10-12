@@ -15,7 +15,7 @@ PTAssist is an AI-augmented remote physical therapy platform, built by a 7-perso
 
 - Web app only, for patients and therapists.
 - Upload only (no live video).
-- 5 exercises (chosen by the AI team in Sprint 1; see `docs/` once they are picked).
+- 5 exercises, picked by the AI team in Sprint 1. Their names in the API are in [`docs/analysis-result.md`](docs/analysis-result.md#exercise-names).
 - Synthetic and open-source data only.
 
 **Stretch goals (Spring 2027, not now):** live in-session feedback, a mobile patient app, a message queue for analysis jobs. Do not build these unless your task says so, but do not make choices that would block them.
@@ -105,6 +105,10 @@ compose.yaml         Local stack: Postgres, Azurite, the API, and the AI service
 - Storage stays private. Only `backend/app/storage/` talks to Azure Blob or Azurite, and only through short-lived links.
 - Do not log tokens, emails, or other personal data.
 - Describe the system as "HIPAA-ready," never "HIPAA compliant."
+
+**Analysis contract**
+- `ai/app/analysis_contract.py` (the `POST /analyze` request and result, error codes, clip limits) has an exact copy in `backend/app/schemas/analysis_contract.py`. Edit only the AI file, then copy it over: `cp ai/app/analysis_contract.py backend/app/schemas/analysis_contract.py`. Never edit the backend copy by hand. A test in each service fails if they differ.
+- Saved results are kept, so only add fields (with a default value). Never rename or remove a field or change its type without a migration that rewrites saved results. Update `docs/analysis-result.md` and its examples in the same PR.
 
 **Database**
 - Change the schema only by adding a new Alembic migration. Never edit a migration that is already merged. Never change the database by hand.

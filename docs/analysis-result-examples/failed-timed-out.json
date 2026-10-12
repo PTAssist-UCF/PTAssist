@@ -1,0 +1,11 @@
+{
+  "status": "failed",
+  "rep_count": null,
+  "hold_seconds": null,
+  "form_score": null,
+  "reps": [],
+  "feedback": [],
+  "error_code": "analysis_timed_out",
+  "error_message": "Checking your video took too long. Please upload it again.",
+  "analyzer_version": null
+}

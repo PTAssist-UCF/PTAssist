@@ -1,0 +1,13 @@
+{
+  "status": "complete",
+  "rep_count": null,
+  "hold_seconds": 0.0,
+  "form_score": null,
+  "reps": [],
+  "feedback": [
+    "We didn't see a full rep or hold. Keep your whole body in the frame and finish each one."
+  ],
+  "error_code": null,
+  "error_message": null,
+  "analyzer_version": "0.1.0"
+}
