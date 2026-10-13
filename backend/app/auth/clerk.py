@@ -9,9 +9,14 @@ from clerk_backend_api.security import (
     AuthenticateRequestOptions,
     TokenVerificationErrorReason,
 )
-from fastapi import Request
+from fastapi import HTTPException, Request, status
 
 from app.config import CLERK_AUTHORIZED_PARTIES, CLERK_SECRET_KEY
+
+# What the API answers when CLERK_SECRET_KEY is missing. The web app shows it.
+MISSING_SECRET_KEY = (
+    "CLERK_SECRET_KEY is not set on the API, so sign-in can't work. See /.env.example."
+)
 
 # Reasons that mean Clerk failed us (no usable signing keys), not that the token is bad.
 _CLERK_FAILURES = {
@@ -33,7 +38,10 @@ class ClerkUnavailableError(Exception):
 def get_clerk() -> Clerk:
     """One Clerk client for all requests. A dependency, so tests can swap it."""
     if not CLERK_SECRET_KEY:
-        raise RuntimeError("CLERK_SECRET_KEY is not set")
+        # An HTTPException, not a plain error: a plain error crashes the request, and
+        # that answer has no CORS headers, so the browser would hide it. This answer
+        # keeps them, so the web app can show the message.
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, MISSING_SECRET_KEY)
     # The SDK retries failed calls for up to an hour by default. Fail fast instead.
     return Clerk(bearer_auth=CLERK_SECRET_KEY, retry_config=None, timeout_ms=10_000)
 

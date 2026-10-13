@@ -20,5 +20,7 @@ export default defineConfig({
     environment: 'jsdom',
     // A fixed API address (with a trailing slash), so tests don't depend on your .env.
     env: { VITE_API_URL: 'http://api.test/' },
+    // Adds browser features that jsdom lacks and our tests need (matchMedia, for Mantine).
+    setupFiles: [fileURLToPath(new URL('./src/setupTests.ts', import.meta.url))],
   },
 });

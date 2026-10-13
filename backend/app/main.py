@@ -1,11 +1,23 @@
 """Entry point: creates the FastAPI app and plugs in every router."""
 
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRoute
 
-from app.config import CLERK_AUTHORIZED_PARTIES
+from app.config import CLERK_AUTHORIZED_PARTIES, CLERK_SECRET_KEY
 from app.routes import health, me
+
+logger = logging.getLogger(__name__)
+
+# The API starts without the Clerk secret key (see app/config.py), so say so in its log
+# right away, not only when someone tries to sign in.
+if not CLERK_SECRET_KEY:
+    logger.warning(
+        "CLERK_SECRET_KEY is not set: the API runs, but sign-in won't work. "
+        "See /.env.example."
+    )
 
 
 def operation_id_from_function_name(route: APIRoute) -> str:
