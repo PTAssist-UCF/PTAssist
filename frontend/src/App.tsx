@@ -10,6 +10,8 @@ import SignInPage from './pages/SignInPage';
 import SignUpPage from './pages/SignUpPage';
 import PatientPage from './pages/patient/PatientPage';
 import TherapistPage from './pages/therapist/TherapistPage';
+import RoleRedirect from '@/components/RoleRedirect';
+import RoleRoute from '@/components/RoleRoute';
 
 export default function App() {
   // Without a publishable key (pk_test_...), Clerk never loads and every page would show a
@@ -29,11 +31,26 @@ export default function App() {
             <Route path="/sign-up/*" element={<SignUpPage />} />
             {/* Every page inside this route needs a signed-in user. */}
             <Route element={<RequireSignIn />}>
-              <Route path="/patient" element={<PatientPage />} />
-              <Route path="/therapist" element={<TherapistPage />} />
+              {/* Sends each user to their own side, based on the role from /me. */}
+              <Route path="/" element={<RoleRedirect />} />
+              <Route 
+                path="/patient" 
+                element={
+                  <RoleRoute role="patient">
+                    <PatientPage />
+                  </RoleRoute>
+                }
+              />
+              <Route 
+                path="/therapist"
+                element={
+                  <RoleRoute role="therapist">
+                    <TherapistPage />
+                  </RoleRoute>
+                } 
+              />
+              <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
-            <Route path="/" element={<Navigate to="/patient" replace />} />
-            <Route path="*" element={<Navigate to="/patient" replace />} />
           </Routes>
         </ApiAuth>
       </ClerkWithRouter>
