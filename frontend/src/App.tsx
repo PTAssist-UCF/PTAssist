@@ -33,21 +33,21 @@ export default function App() {
             <Route element={<RequireSignIn />}>
               {/* Sends each user to their own side, based on the role from /me. */}
               <Route path="/" element={<RoleRedirect />} />
-              <Route 
-                path="/patient" 
+              <Route
+                path="/patient"
                 element={
                   <RoleRoute role="patient">
                     <PatientPage />
                   </RoleRoute>
                 }
               />
-              <Route 
+              <Route
                 path="/therapist"
                 element={
                   <RoleRoute role="therapist">
                     <TherapistPage />
                   </RoleRoute>
-                } 
+                }
               />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
