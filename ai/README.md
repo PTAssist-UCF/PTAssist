@@ -14,7 +14,11 @@ app/
   analysis_contract.py  The request and result shared with the backend (exact copy there)
   schemas.py            Shapes used only here (the GET /health response)
   keypoints/            Video to body keypoints (Sprint 2)
-  analysis/             Keypoints to reps, scores, and feedback (Sprint 2)
+  analysis/             Shared geometry, smoothing, and visibility helpers
+    landmarks.py        Plain normalized image landmarks
+    geometry.py         Angles, distances, midpoints, and signed line offsets
+    smoothing.py        Time-based exponential smoothing with tracking-gap reset
+    visibility.py       Required-joint checks and a mask preserving frame indices
     exercises/          One file per exercise
 tests/                  pytest tests. fixtures/ holds keypoint JSON test data
 Dockerfile              The service image: Python, ffmpeg, OpenCV, MediaPipe
@@ -74,6 +78,87 @@ video -> normalize (ffmpeg) -> keypoints (MediaPipe) -> analysis (rules per exer
 | Exercise rules | `app/analysis/exercises/` | One file per exercise: what counts as a rep, form checks, feedback |
 
 **Keep keypoints and analysis separate.** Analysis takes keypoint frames, never video. That lets live feedback (a Spring goal) reuse the same analysis code on frames from a camera.
+
+### Shared analyzer helpers (SCRUM-30)
+
+The helpers in `app/analysis/` use plain Python data and have no camera, OpenCV,
+or MediaPipe imports. They follow the geometry and confidence conventions in
+the AI team's `ptassist_squat` proof of concept on `Jonathan-AI-Test`.
+
+- `Landmark(x, y, visibility=1.0, presence=1.0)` holds normalized image
+  coordinates. `confidence` is the lower of visibility and presence. The future
+  keypoint adapter should supply both scores from the pose provider; missing
+  provider scores should be mapped to zero rather than using these defaults.
+- `joint_angle(a, joint, b, width, height)` returns the angle at `joint` in
+  degrees from 0 to 180. `lean_from_vertical(shoulder, hip, width, height)`
+  returns unsigned lean from 0 to 90 degrees. Both scale normalized coordinates
+  by the actual frame dimensions, so a non-square image does not distort angles.
+  These are 2D image-plane measurements, not 3D joint angles. Nonfinite
+  coordinates, invalid dimensions, and coincident points raise `ValueError`.
+- `distance(a, b, width, height)` returns the distance between two landmarks in
+  pixels (zero for coincident points). Pass `reference_length_pixels=...` to
+  divide it by a positive finite torso or limb length, measured using the same
+  image dimensions. For example, compute torso length with `distance(shoulder,
+  hip, width, height)`, then use that length to normalize wrist displacement.
+- `midpoint(a, b)` returns a `Landmark` at the normalized midpoint, suitable for
+  the other helpers. Its visibility and presence are the lower of the input
+  scores, so averaging two joints cannot improve confidence. Invalid coordinates
+  or confidence scores raise `ValueError`. It needs no frame dimensions because
+  midpoint averaging commutes with image scaling.
+- `signed_segment_angle(a, b, c, d, width, height)` returns the rotation from
+  directed segment `a -> b` to `c -> d` in degrees from -180 to 180. With image
+  coordinates (y increases downward), positive means clockwise. Reversing the
+  segment order reverses the sign, except that opposite segments lie at the
+  ambiguous +/-180 boundary. Coincident endpoints raise `ValueError`.
+- `signed_distance_to_line(landmark, line_start, line_end, width, height)` returns
+  perpendicular distance in pixels to the **infinite line** through the two
+  endpoints, including when the projection lies beyond the segment. For a line
+  pointing right, points below it have positive distance; reversing endpoints
+  reverses the sign. It also accepts `reference_length_pixels` for normalization.
+  Coincident line endpoints raise `ValueError`. An analyzer must use a consistent
+  endpoint order when interpreting the sign, including when a patient faces the
+  opposite direction in a side view.
+- `is_frame_visible(landmarks, required_joints, ...)` requires every named joint
+  to be present, within the image margin, and to have both visibility and presence
+  at least `min_confidence`. Invalid scores and coordinates are rejected. The
+  prototype defaults are `min_confidence=0.65` and `frame_margin=0.025`; each
+  analyzer can override them. Only the exercise's required joints are checked.
+  `visibility_mask(frames, required_joints, ...)` returns one Boolean per frame.
+  Keep the original timestamps and indices; do not close tracking gaps by
+  dropping rejected frames and renumbering the remainder.
+- `ExponentialSmoother(tau_seconds=0.12, max_gap_seconds=0.75)` smooths one scalar
+  signal with `alpha = 1 - exp(-elapsed_seconds / tau_seconds)`. Create one per
+  measurement. The first sample passes through; `None` marks a rejected frame
+  and returns `None`. History survives short gaps, but a gap **longer than** the
+  limit resets the signal to the next valid sample. Values must be finite and
+  timestamps must be nonnegative, finite, and strictly increasing. Call `reset()`
+  for a new clip or when switching the tracked side.
+
+For example, after converting a pose into a dictionary of `Landmark` objects:
+
+```python
+from app.analysis.geometry import joint_angle
+from app.analysis.smoothing import ExponentialSmoother
+from app.analysis.visibility import is_frame_visible
+
+knee_smoother = ExponentialSmoother()  # Keep this instance across the clip.
+required = ("left_hip", "left_knee", "left_ankle")
+
+
+def knee_measurement(landmarks, timestamp_seconds, width, height):
+    angle = None
+    if is_frame_visible(landmarks, required):
+        try:
+            angle = joint_angle(*(landmarks[name] for name in required), width, height)
+        except ValueError:
+            pass  # Degenerate geometry is another rejected measurement.
+    return knee_smoother.update(angle, timestamp_seconds)
+```
+
+An analyzer must abstain from rep and form decisions when this returns `None`.
+Synthetic tests in `tests/test_geometry.py`, `tests/test_smoothing.py`, and
+`tests/test_visibility.py` are collected by the existing `AI tests` PR CI job.
+These helpers do not change the stub endpoint's results or the shared API contract.
 
 ## API
 
