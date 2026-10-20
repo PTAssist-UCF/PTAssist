@@ -70,7 +70,9 @@ The patient is **in position** on a frame when all four hold:
 
 ## Form rules
 
-Checked on every frame used from `start_seconds` to `end_seconds` of each hold. Each frame where a rule holds adds one frame's time (1 / frame rate) to that issue's time. An issue is reported for a hold only if its time in that hold is 1 second or more.
+Checked on every frame used from `start_seconds` to `end_seconds` of each hold. For consecutive video frames at times `t` and `next_t`, the first frame represents `[t, next_t)`. Only the part inside the hold's `[start_seconds, end_seconds)` interval contributes to issue time. Keep untracked frames in the timeline: they contribute no issue time, so a tracked frame never represents the whole tracking gap. The frame at `end_seconds` contributes zero time. An issue is reported for a hold only if its time in that hold is 1 second or more.
+
+For example, 31 frames at 15 fps from 0 through 2 seconds make a 2-second hold, with 30 intervals of 1/15 second. If all frames show sagging hips, the issue time is 2 seconds, good-form time is 0, and the hold scores 0.
 
 | Code | Rule | Message | Tip | Penalty |
 | --- | --- | --- | --- | --- |
@@ -80,7 +82,7 @@ Checked on every frame used from `start_seconds` to `end_seconds` of each hold. 
 - A hip angle of 160° means the hip is about 0.2 torso lengths off the line, roughly 10 to 12 cm for an adult.
 - The rules compare the hip to the line from shoulder to ankle, not to the shoulder's height. In a good forearm plank the hips are lower than the shoulders, because the shoulders are raised on the forearms.
 - No `too_fast` rule: a hold has no reps.
-- **Good-form time** is the hold's time minus the time when a reported issue was present. Time with an issue that was not reported (under 1 second) counts as good form, so a hold with no issues scores 100. The framework scores each hold as good-form time divided by hold time (see [Scoring](../analysis-result.md#scoring)). Penalties do not change hold scores. They rank the feedback (see [Feedback](../analysis-result.md#feedback)).
+- **Good-form time** is the hold's time minus the duration of the union of intervals when a reported issue was present (count overlapping intervals once). Keep it between 0 and the hold's duration, including after floating-point arithmetic. Time with an issue that was not reported (under 1 second) counts as good form, so a hold with no issues scores 100. The framework scores each hold as good-form time divided by hold time (see [Scoring](../analysis-result.md#scoring)). Penalties do not change hold scores. They rank the feedback (see [Feedback](../analysis-result.md#feedback)).
 
 ## Metrics
 

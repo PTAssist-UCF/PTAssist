@@ -66,7 +66,8 @@ squat-v03-02,squat,v03,android,5,,not_deep_enough,Jonathan,Carlos,
 - The whole body the spec asks for stays in the frame for the whole clip.
 - Start recording, get into the spec's start position, and stay still for about 2 seconds. Walking into place after pressing record is fine, as a patient would. End in the start position, still for about 2 seconds, then stop.
 - Clips are about 10 to 60 seconds long (the app accepts 3 seconds to 2 minutes).
-- 5 reps per clip, slow and steady (about 3 seconds per rep, 5 for cat-cow), unless the clip is for `too_fast`. Plank: one hold of 20 to 40 seconds.
+- 5 reps per clip, slow and steady (about 5 seconds for each full movement), unless the clip is for `too_fast`. For shallow squats and low arm or leg lifts, add a 2-second pause at the bottom of the squat or top of the lift. Plank: one hold of 20 to 40 seconds.
+- The analyzer times only the part between the spec's rep-start and rep-end thresholds, not the whole movement from rest. That interval must be at least 2 seconds (3 for cat-cow) on clips that are not for `too_fast`. Shallow movements spend less time between those thresholds, which is why they need the extra pause. The second person checking the clip checks this interval too; slow down and record it again if it is too short rather than adding `too_fast` to its label.
 - Act out only the one error the clip is for, on every rep (or for the whole hold). Make it clear, but still do full reps: a half squat, not a small dip.
 - Afterwards: watch the clip once to check the framing, rename it to its clip id, upload it to `clips/<exercise>/`, add its row to `labels.csv`, and delete it from the phone and its photo backup.
 
@@ -84,7 +85,7 @@ How to act out each kind of clip. The codes are from each spec's Form rules, and
 
 | Exercise | Clip | How to act it out |
 | --- | --- | --- |
-| `squat` | Good form | Squat until your thighs are close to level with the floor, chest up, about 3 seconds per rep |
+| `squat` | Good form | Squat until your thighs are close to level with the floor, chest up, about 5 seconds per rep |
 | | `leaning_forward` | Lean your chest far forward as you go down, so it comes over your knees |
 | | `not_deep_enough` | Half squats: stop about halfway between standing and thighs level |
 | | `too_fast` | Good squats, but down and up in about 1 second |
