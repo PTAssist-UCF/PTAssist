@@ -13,7 +13,10 @@ app/
   main.py               The web server: GET /health and POST /analyze
   analysis_contract.py  The request and result shared with the backend (exact copy there)
   schemas.py            Shapes used only here (the GET /health response)
-  keypoints/            Video to body keypoints (Sprint 2)
+  keypoints/            Video to body keypoints, a command-line prototype for now
+    video.py            ffmpeg: normalize the input video, write the overlay video
+    pose.py             MediaPipe landmarks as JSON-ready data, and the skeleton drawing
+    __main__.py         The command line: python -m app.keypoints
   analysis/             Shared geometry, smoothing, and visibility helpers
     landmarks.py        Plain normalized image landmarks
     geometry.py         Angles, distances, midpoints, and signed line offsets
@@ -78,6 +81,88 @@ video -> normalize (ffmpeg) -> keypoints (MediaPipe) -> analysis (rules per exer
 | Exercise rules | `app/analysis/exercises/` | One file per exercise: what counts as a rep, form checks, feedback |
 
 **Keep keypoints and analysis separate.** Analysis takes keypoint frames, never video. That lets live feedback (a Spring goal) reuse the same analysis code on frames from a camera.
+
+### Keypoint prototype (SCRUM-27)
+
+A command-line prototype of the keypoint step. `POST /analyze` does not use it yet. SCRUM-49 (Sprint 2) turns it into a tested module: checks on iOS (`.mov`, HEVC) and Android clips, and the model file in the Docker image.
+
+**Download the model.** It uses MediaPipe's Pose Landmarker Full model (about 9 MB). Model files are not kept in git (`*.task` is in `/.gitignore`). From `ai/`:
+
+```bash
+curl -fL --create-dirs -o models/pose_landmarker_full.task https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task
+sha256sum models/pose_landmarker_full.task   # Windows PowerShell: Get-FileHash models\pose_landmarker_full.task
+```
+
+In Windows PowerShell, type `curl.exe` instead of `curl`. The SHA-256 must be `5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1` (`Get-FileHash` prints it in capitals).
+
+**Run it** from `ai/`. It needs ffmpeg (see [Run locally](#run-locally)).
+
+```bash
+python -m app.keypoints path/to/video.mov --out path/to/output-folder
+```
+
+`--model PATH` uses a model file somewhere else (the default is `models/pose_landmarker_full.task`). Use an output folder outside the repo: git ignores the overlay video but not the JSON. It writes two files named after the video:
+
+| File | Holds |
+| --- | --- |
+| `<name>.keypoints.json` | Body landmarks for every frame (format below) |
+| `<name>.overlay.mp4` | The normalized video with the skeleton drawn on it (green lines, yellow dots) and the time in seconds, top left. Joints with a confidence below 0.5, or outside the image, are not drawn. H.264, so it plays in browsers and in Windows |
+
+Then it prints the frame count, the frames with a person, and the speed of the whole run, model loading included:
+
+```
+Wrote path/to/output-folder/video.keypoints.json and .overlay.mp4
+Frames: 63, with a person: 63
+Time: 3.2 s, 19.6 frames per second
+```
+
+MediaPipe also prints a few `INFO` and `W0000` lines when it starts. They are harmless. On Linux outside Docker, MediaPipe needs `libegl1` and `libgles2` (`sudo apt-get install libegl1 libgles2`); without them it fails with `libEGL.so.1: cannot open shared object file`. The Docker image has them.
+
+If ffmpeg or the model file is missing, or ffmpeg cannot read the video, it prints an `error:` line and exits with code 1.
+
+**Normalization.** ffmpeg first turns every input into an upright H.264 MP4, in a temporary folder that is deleted at the end. The constants are at the top of `app/keypoints/video.py`.
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| Rotation | Applied | Phones store portrait video sideways with a rotation tag. ffmpeg applies the tag when it re-encodes, so the output is upright |
+| Frame rate | Constant 15 fps (`TARGET_FPS`) | PT reps take 2 seconds or more, so 15 is plenty, and it halves MediaPipe's time compared with 30 |
+| Size | Longer side at most 1280 px (`MAX_SIDE_PIXELS`) | MediaPipe shrinks every image internally, so bigger frames only cost time. Never scaled up; width and height are even. Assumes square pixels, which phone videos always have |
+| Streams | First video stream only | Audio is dropped |
+
+MediaPipe then runs on each frame: the Tasks API `PoseLandmarker` in video mode, one person, and detection, presence, and tracking confidence 0.5, like the prototype on `Jonathan-AI-Test`. Frame timestamps are `round(index * 1000 / 15)` milliseconds.
+
+**Keypoint JSON.** One object per video (shortened here: each `landmarks` has all 33 names):
+
+```json
+{
+  "video": {"width": 1280, "height": 720, "fps": 15.0, "frame_count": 63},
+  "model": "pose_landmarker_full.task",
+  "frames": [
+    {"index": 0, "time_seconds": 0.0, "landmarks": {"nose": [0.5722, 0.1251, 1.0, 1.0], "left_eye_inner": [0.5783, 0.1156, 1.0, 1.0]}},
+    {"index": 1, "time_seconds": 0.067, "landmarks": null}
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `video.width`, `video.height` | Size of the normalized video in pixels. Pass these to the geometry helpers |
+| `video.fps` | Always 15.0 |
+| `video.frame_count` | The number of entries in `frames` |
+| `model` | The MediaPipe model file |
+| `frames[].index` | Frame number, from 0. Frames without a person are kept, so there are no gaps |
+| `frames[].time_seconds` | `index / fps`, rounded to 3 decimals |
+| `frames[].landmarks` | MediaPipe's 33 landmarks by name (`NAMES` in `app/keypoints/pose.py`), or `null` when no person was found |
+
+Each landmark is `[x, y, visibility, presence]`:
+
+- `x` and `y` are normalized image coordinates: 0 to 1 across the width and height, rounded to 4 decimals. They can be slightly below 0 or above 1 when MediaPipe guesses a joint outside the frame.
+- `visibility` and `presence` are 0 to 1, rounded to 3 decimals. A missing score becomes 0.
+- The order matches `Landmark`, so `Landmark(*values)` (from `app/analysis/landmarks.py`) turns one into input for the analysis helpers.
+- There is no `z` and there are no world (3D) landmarks. MediaPipe has both, so they can be added later as new fields.
+- The JSON leaves out the input file's path, which could hold a patient's name.
+
+`tests/test_keypoints.py` checks the ffmpeg arguments, the JSON conversion, and the drawing. It needs neither ffmpeg nor the model, so CI runs it without them. The prototype was also checked by hand on a 4-second dance clip (a Pexels video, as used in the `tensorflow/tfjs-models` demos; not in the repo) and on variants of it made with ffmpeg: 1920x1080 at 30 fps with audio (came out 1280x720 at 15 fps, no audio), a portrait clip stored sideways with a rotation tag (came out upright, 720x1280), and HEVC in a `.mov`. Every overlay followed the joints.
 
 ### Shared analyzer helpers (SCRUM-30)
 

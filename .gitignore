@@ -30,6 +30,9 @@ __queuestorage__/
 __azurite_db_*__.json
 AzuriteConfig
 
+# MediaPipe model files: download them (see ai/README.md), don't commit them
+*.task
+
 # Editors and OS
 .vscode/
 .idea/
