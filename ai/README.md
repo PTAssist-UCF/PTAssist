@@ -220,7 +220,7 @@ If the video cannot be downloaded from `video_url`, or our own code raises an un
 
 ## Adding an exercise
 
-1. Write its spec in `docs/`: camera angle, key joints, whether it is done in reps or held, what counts as one rep (or when a hold ends), and whether reps have a side. For each form rule: its threshold, and an issue code with a message (what went wrong), a tip (what to do), and a penalty. Also any metrics it reports, each name ending with its unit. See [`docs/analysis-result.md`](../docs/analysis-result.md) for how these fit the result.
+1. Write its spec in `docs/exercises/`, following the template in [`docs/exercises/README.md`](../docs/exercises/README.md): camera angle, key joints, whether it is done in reps or held, what counts as one rep (or when a hold ends), and whether reps have a side. For each form rule: its threshold, and an issue code with a message (what went wrong), a tip (what to do), and a penalty. Also any metrics it reports, each name ending with its unit. See [`docs/analysis-result.md`](../docs/analysis-result.md) for how these fit the result.
 2. Add a file in `app/analysis/exercises/` that follows the shared analyzer interface.
 3. Ask the backend team to add its name to the `Exercise` table, with a new Alembic migration (never by hand). The name is a plain string, so the contract does not change.
 4. Add labeled test clips and check it against the accuracy targets.
