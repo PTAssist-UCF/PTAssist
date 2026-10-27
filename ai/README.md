@@ -13,9 +13,10 @@ app/
   main.py               The web server: GET /health and POST /analyze
   analysis_contract.py  The request and result shared with the backend (exact copy there)
   schemas.py            Shapes used only here (the GET /health response)
-  keypoints/            Video to body keypoints, a command-line prototype for now
+  keypoints/            Video to body keypoints, with a reusable extractor and CLI
     video.py            ffmpeg: normalize the input video, write the overlay video
     pose.py             MediaPipe landmarks as JSON-ready data, and the skeleton drawing
+    extract.py          Reusable video-to-keypoints function
     __main__.py         The command line: python -m app.keypoints
   analysis/             Shared geometry, smoothing, and visibility helpers
     landmarks.py        Plain normalized image landmarks
@@ -58,6 +59,7 @@ docker run --rm -p 8001:8001 ptassist-ai    # http://localhost:8001/health
 ```
 
 The image starts from `python:3.12-slim-trixie` (Debian 13), installs ffmpeg and the system libraries OpenCV and MediaPipe need with `apt-get`, then installs `requirements.txt` with pip. It runs as a non-root user. The `Dockerfile` explains each step.
+The image also downloads the fixed Pose Landmarker Full model and checks its SHA-256 during the build. Local runs download it separately (see Download the model, under Pipeline).
 
 ### In Docker Compose
 
@@ -82,11 +84,15 @@ video -> normalize (ffmpeg) -> keypoints (MediaPipe) -> analysis (rules per exer
 
 **Keep keypoints and analysis separate.** Analysis takes keypoint frames, never video. That lets live feedback (a Spring goal) reuse the same analysis code on frames from a camera.
 
-### Keypoint prototype (SCRUM-27)
+### Keypoint module (SCRUM-49)
 
-A command-line prototype of the keypoint step. `POST /analyze` does not use it yet. SCRUM-49 (Sprint 2) turns it into a tested module: checks on iOS (`.mov`, HEVC) and Android clips, and the model file in the Docker image.
+`app.keypoints.extract.extract_keypoints(video, model)` returns the documented keypoint data in memory. It normalizes phone video with ffmpeg, applies rotation metadata, decodes the normalized frames with OpenCV, and runs MediaPipe. Passing `overlay_path` additionally writes a debug overlay. Temporary video files are deleted when the call ends. `POST /analyze` does not call it yet; that integration belongs to SCRUM-52. The command-line tool uses the same function and saves its return value as JSON.
 
-**Download the model.** It uses MediaPipe's Pose Landmarker Full model (about 9 MB). Model files are not kept in git (`*.task` is in `/.gitignore`). From `ai/`:
+The unit tests check frame timing, cleanup, and the ffmpeg settings. A local iPhone check on October 27, 2026 used a 34.64-second portrait `.MOV` (H.264, 1080 x 1920, about 30 fps). It normalized to 720 x 1280 at 15 fps, with 520 frames. MediaPipe found a person in 497 frames; the missing detections were before and after the exercise movements. Both arms' required joints passed the exercise's confidence and framing checks in all 382 frames spanning the movements.
+
+Synthetic HEVC `.mov` and rotation-metadata checks also passed. Videos are never committed here.
+
+**Download the model.** It uses MediaPipe's Pose Landmarker Full model (about 9 MB). Model files are not kept in git (`*.task` is in `/.gitignore`). From `ai/`, run `python download_model.py`. The script verifies the SHA-256 before saving the file. A manual alternative is:
 
 ```bash
 curl -fL --create-dirs -o models/pose_landmarker_full.task https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task

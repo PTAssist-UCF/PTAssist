@@ -33,7 +33,7 @@ def normalize_command(source: Path, target: Path) -> list[str]:
     )
     return [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-        "-i", str(source),
+        "-autorotate", "-i", str(source),
         "-map", "0:v:0",
         "-vf", filters,
         "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
@@ -47,8 +47,8 @@ def normalize(source: Path, target: Path) -> None:
         normalize_command(source, target), capture_output=True, text=True
     )
     if process.returncode != 0:
-        detail = process.stderr.strip() or "no details"
-        raise VideoError(f"ffmpeg could not read {source.name}: {detail}")
+        # ffmpeg stderr can include the input path or metadata with personal data.
+        raise VideoError("ffmpeg could not read the input video")
 
 
 def overlay_command(target: Path, width: int, height: int) -> list[str]:

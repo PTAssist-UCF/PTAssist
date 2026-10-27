@@ -5,15 +5,18 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from app.analysis.landmarks import Landmark
+from app.keypoints import video
 from app.keypoints.pose import NAMES, draw_skeleton, frame_json
-from app.keypoints.video import normalize_command, overlay_command
+from app.keypoints.video import VideoError, normalize_command, overlay_command
 
 
 def test_normalize_command_drops_audio_and_sets_rate_and_size() -> None:
     args = normalize_command(Path("in.mov"), Path("out.mp4"))
     assert args[0] == "ffmpeg"
+    assert args.index("-autorotate") < args.index("-i")
     assert args[args.index("-i") + 1] == "in.mov"
     assert args[args.index("-map") + 1] == "0:v:0"  # first video stream, no audio
     filters = args[args.index("-vf") + 1]
@@ -30,6 +33,18 @@ def test_overlay_command_reads_raw_frames_of_the_given_size() -> None:
     assert args[args.index("-i") + 1] == "-"
     assert args[args.index("-c:v") + 1] == "libx264"
     assert args[-1] == "overlay.mp4"
+
+
+def test_normalization_failure_does_not_reveal_a_video_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def failed_ffmpeg(*args: object, **kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(returncode=1, stderr="Failed to open patient-name.mov")
+
+    monkeypatch.setattr(video.subprocess, "run", failed_ffmpeg)
+    with pytest.raises(VideoError, match="could not read the input video") as error:
+        video.normalize(Path("patient-name.mov"), Path("normalized.mp4"))
+    assert "patient-name" not in str(error.value)
 
 
 def test_frame_json_rounds_scores_and_maps_missing_scores_to_zero() -> None:
