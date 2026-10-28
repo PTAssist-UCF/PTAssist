@@ -25,7 +25,7 @@ from app.schemas import HealthResponse
 # raise the version number whenever anything that can change a result changes: an
 # exercise's analyzer or thresholds, the shared framework (penalties, scoring, feedback,
 # rep splitting), or the keypoint step (MediaPipe or video normalization).
-ANALYZER_VERSION = "0.1.0-stub"
+ANALYZER_VERSION = "0.2.0-stub"
 
 # The exercises the stub knows. The plank is held for time; the others are done in
 # reps. Names are plain strings: to add or rename an exercise, change it here (later,
