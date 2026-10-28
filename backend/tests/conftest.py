@@ -110,22 +110,37 @@ class FakeClerk:
 
 
 @pytest.fixture(scope="session")
-def database() -> Iterator[None]:
-    """Build the schema with the real migrations, then drop it (tests downgrade too)."""
+def alembic_config() -> Config:
+    """Alembic settings for running the real migrations on the test database."""
     # No alembic.ini: its logging settings would change the log levels tests check.
     config = Config()
     config.set_main_option(
         "script_location", str(Path(__file__).parents[1] / "migrations")
     )
-    command.upgrade(config, "head")
+    return config
+
+
+@pytest.fixture(scope="session")
+def database(alembic_config: Config) -> Iterator[None]:
+    """Build the schema with the real migrations, then drop it (tests downgrade too)."""
+    command.upgrade(alembic_config, "head")
     yield
-    command.downgrade(config, "base")
+    command.downgrade(alembic_config, "base")
+
+
+# Tables the migrations fill in, kept between tests. Tests must not change them.
+MIGRATION_DATA_TABLES = {"exercises"}
 
 
 @pytest.fixture
 def db(database: None) -> Iterator[Session]:
-    """A session on the test database. Every test starts with empty tables."""
-    tables = ", ".join(table.name for table in Base.metadata.sorted_tables)
+    """A session on the test database. Every test starts with empty tables, except the
+    ones the migrations fill in (MIGRATION_DATA_TABLES)."""
+    tables = ", ".join(
+        table.name
+        for table in Base.metadata.sorted_tables
+        if table.name not in MIGRATION_DATA_TABLES
+    )
     with engine.begin() as connection:
         connection.execute(text(f"TRUNCATE {tables}"))
     with Session(engine) as session:
