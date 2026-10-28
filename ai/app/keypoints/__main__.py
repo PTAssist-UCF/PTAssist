@@ -12,11 +12,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .extract import extract_keypoints
-from .video import VideoError
-
-# Relative to ai/, where the command runs. The model is not in git (see README).
-DEFAULT_MODEL = Path("models/pose_landmarker_full.task")
+from .extract import DEFAULT_MODEL, extract_keypoints
+from .video import OverlayError, VideoError, VideoTimeoutError
 
 
 def extract(video: Path, out_dir: Path, model: Path) -> dict[str, Any]:
@@ -55,14 +52,15 @@ def main() -> None:
     if not args.model.is_file():
         sys.exit(
             f"error: model file not found: {args.model}\n"
-            "Download it as shown in ai/README.md (Keypoint prototype)."
+            "Download it with `python download_model.py` "
+            "(see ai/README.md, Keypoint module)."
         )
 
     args.out.mkdir(parents=True, exist_ok=True)
     start = time.perf_counter()
     try:
         data = extract(args.video, args.out, args.model)
-    except VideoError as error:
+    except (VideoError, VideoTimeoutError, OverlayError) as error:
         sys.exit(f"error: {error}")
     seconds = time.perf_counter() - start
 

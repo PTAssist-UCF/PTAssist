@@ -86,13 +86,25 @@ video -> normalize (ffmpeg) -> keypoints (MediaPipe) -> analysis (rules per exer
 
 ### Keypoint module (SCRUM-49)
 
-`app.keypoints.extract.extract_keypoints(video, model)` returns the documented keypoint data in memory. It normalizes phone video with ffmpeg, applies rotation metadata, decodes the normalized frames with OpenCV, and runs MediaPipe. Passing `overlay_path` additionally writes a debug overlay. Temporary video files are deleted when the call ends. `POST /analyze` does not call it yet; that integration belongs to SCRUM-52. The command-line tool uses the same function and saves its return value as JSON.
+`app.keypoints.extract.extract_keypoints(video, model)` returns the documented keypoint data in memory. It loads the model, normalizes phone video with ffmpeg, applies rotation metadata, decodes the normalized frames with OpenCV, and runs MediaPipe. Passing `overlay_path` additionally writes a debug overlay. Temporary video files are deleted when the call ends. `POST /analyze` does not call it yet; that integration belongs to SCRUM-52. The command-line tool uses the same function and saves its return value as JSON.
+
+Errors (all in `app/keypoints/video.py`):
+
+| Error | When | For the caller |
+| --- | --- | --- |
+| `VideoError` | ffmpeg cannot decode the video, or it has no frames | The video is the problem: `video_unreadable` may ask the patient to record again |
+| `VideoTimeoutError` | ffmpeg runs longer than 5 minutes | Not a `VideoError`: the video may be fine and the server slow, so never `video_unreadable` |
+| `OverlayError` | ffmpeg cannot write the debug overlay (command-line tool only) | Our output failed, not the video |
+
+Anything else, such as a missing model file, is a bug or setup problem on our side. When ffmpeg fails, its last error line is logged with the input path replaced by `<input>`.
+
+**Too-long videos (prepared for SCRUM-73).** ffmpeg reads at most `MAX_VIDEO_SECONDS` + 1 seconds (`MAX_NORMALIZED_SECONDS`), so an over-long upload is never processed in full. Nothing rejects it yet: until SCRUM-73, the first 121 seconds are analyzed. SCRUM-73 fails a video as `too_long` when `frame_count / fps` in the returned data is above `MAX_VIDEO_SECONDS`; the extra second is what makes that check possible.
 
 The unit tests check frame timing, cleanup, and the ffmpeg settings. A local iPhone check on October 27, 2026 used a 34.64-second portrait `.MOV` (H.264, 1080 x 1920, about 30 fps). It normalized to 720 x 1280 at 15 fps, with 520 frames. MediaPipe found a person in 497 frames; the missing detections were before and after the exercise movements. Both arms' required joints passed the exercise's confidence and framing checks in all 382 frames spanning the movements.
 
 Synthetic HEVC `.mov` and rotation-metadata checks also passed. Videos are never committed here.
 
-**Download the model.** It uses MediaPipe's Pose Landmarker Full model (about 9 MB). Model files are not kept in git (`*.task` is in `/.gitignore`). From `ai/`, run `python download_model.py`. The script verifies the SHA-256 before saving the file. A manual alternative is:
+**Download the model.** It uses MediaPipe's Pose Landmarker Full model (about 9 MB). Model files are not kept in git (`*.task` is in `/.gitignore`). Run `python download_model.py` (from any folder). The script verifies the SHA-256 before saving the file to `ai/models/`, where the extractor and the command-line tool look for it. A manual alternative is:
 
 ```bash
 curl -fL --create-dirs -o models/pose_landmarker_full.task https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task
@@ -168,7 +180,7 @@ Each landmark is `[x, y, visibility, presence]`:
 - There is no `z` and there are no world (3D) landmarks. MediaPipe has both, so they can be added later as new fields.
 - The JSON leaves out the input file's path, which could hold a patient's name.
 
-`tests/test_keypoints.py` checks the ffmpeg arguments, the JSON conversion, and the drawing. It needs neither ffmpeg nor the model, so CI runs it without them. The prototype was also checked by hand on a 4-second dance clip (a Pexels video, as used in the `tensorflow/tfjs-models` demos; not in the repo) and on variants of it made with ffmpeg: 1920x1080 at 30 fps with audio (came out 1280x720 at 15 fps, no audio), a portrait clip stored sideways with a rotation tag (came out upright, 720x1280), and HEVC in a `.mov`. Every overlay followed the joints.
+`tests/test_keypoints.py` checks the ffmpeg arguments, error messages, the JSON conversion, and the drawing. `tests/test_extract.py` checks `extract_keypoints` with stand-ins for ffmpeg, OpenCV, and MediaPipe: frame timing, cleanup after errors, and videos without frames. Neither needs ffmpeg or the model, so CI runs them without them. The prototype was also checked by hand on a 4-second dance clip (a Pexels video, as used in the `tensorflow/tfjs-models` demos; not in the repo) and on variants of it made with ffmpeg: 1920x1080 at 30 fps with audio (came out 1280x720 at 15 fps, no audio), a portrait clip stored sideways with a rotation tag (came out upright, 720x1280), and HEVC in a `.mov`. Every overlay followed the joints.
 
 ### Shared analyzer helpers (SCRUM-30 and SCRUM-50)
 

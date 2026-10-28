@@ -9,7 +9,10 @@ MODEL_URL = (
     "pose_landmarker_full/float16/1/pose_landmarker_full.task"
 )
 MODEL_SHA256 = "5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1"
-MODEL_PATH = Path("models/pose_landmarker_full.task")
+# ai/models/, wherever the script runs from. app.keypoints.extract.DEFAULT_MODEL must
+# match (a test checks); this script cannot import it, because the Docker image runs
+# it before the app/ code is copied in.
+MODEL_PATH = Path(__file__).resolve().parent / "models/pose_landmarker_full.task"
 
 
 def main() -> None:
