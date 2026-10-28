@@ -1,6 +1,6 @@
-import { Alert, Badge, Button, Card, Group, List, Stack, Text } from "@mantine/core";
-import type { AnalysisResult, Side } from "./types";
-import { BAND_COLOR, BAND_LABEL, getScoreBand } from "./scoreBand";
+import { Alert, Badge, Button, Card, Group, List, Stack, Text } from '@mantine/core';
+import type { AnalysisResult, Side } from './types';
+import { BAND_COLOR, BAND_LABEL, getScoreBand } from './scoreBand';
 
 interface ResultViewProps {
   result: AnalysisResult;
@@ -9,9 +9,9 @@ interface ResultViewProps {
 }
 
 const SIDE_LABEL: Record<Exclude<Side, null>, string> = {
-  left: "Left",
-  right: "Right",
-  both: "Both sides",
+  left: 'Left',
+  right: 'Right',
+  both: 'Both sides',
 };
 
 function ScoreBadge({ score, testId }: { score: number; testId?: string }) {
@@ -25,12 +25,12 @@ function ScoreBadge({ score, testId }: { score: number; testId?: string }) {
 
 export function ResultView({ result, onReupload }: ResultViewProps) {
   // 1. Failed state
-  if (result.status === "failed") {
-    const canReupload = result.error_code !== "unknown_exercise" && onReupload;
+  if (result.status === 'failed') {
+    const canReupload = result.error_code !== 'unknown_exercise' && onReupload;
     return (
       <Alert color="red" title="We couldn't analyze your video" data-testid="result-failed">
         <Stack gap="sm">
-          <Text>{result.error_message ?? "Something went wrong. Please try again."}</Text>
+          <Text>{result.error_message ?? 'Something went wrong. Please try again.'}</Text>
           {canReupload && <Button onClick={onReupload}>Upload again</Button>}
         </Stack>
       </Alert>
@@ -40,8 +40,8 @@ export function ResultView({ result, onReupload }: ResultViewProps) {
   // 2. Hold time wins when it's not null (0 is a real value)
   const isHold = result.hold_seconds !== null;
   const mainValue = isHold ? result.hold_seconds!.toFixed(1) : String(result.rep_count ?? 0);
-  const mainLabel = isHold ? "seconds held" : "reps";
-  const entryLabel = isHold ? "Hold" : "Rep";
+  const mainLabel = isHold ? 'seconds held' : 'reps';
+  const entryLabel = isHold ? 'Hold' : 'Rep';
 
   return (
     <Card withBorder padding="lg">
@@ -71,15 +71,15 @@ export function ResultView({ result, onReupload }: ResultViewProps) {
 
         {result.reps.length > 0 && (
           <Stack gap="xs">
-            <Text fw={600}>{isHold ? "Holds" : "Reps"}</Text>
+            <Text fw={600}>{isHold ? 'Holds' : 'Reps'}</Text>
             {result.reps.map((rep) => (
               <Card key={rep.index} withBorder padding="sm" data-testid={`rep-${rep.index}`}>
                 <Group justify="space-between">
                   <Text>
                     {entryLabel} {rep.index}
-                    {rep.side ? ` · ${SIDE_LABEL[rep.side]}` : ""}
+                    {rep.side ? ` · ${SIDE_LABEL[rep.side]}` : ''}
                     <Text span c="dimmed">
-                      {" "}
+                      {' '}
                       ({rep.start_seconds.toFixed(1)}s to {rep.end_seconds.toFixed(1)}s)
                     </Text>
                   </Text>

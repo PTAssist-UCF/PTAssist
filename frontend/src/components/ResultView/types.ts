@@ -1,8 +1,8 @@
 // TEMPORARY: delete once an API route returns the result (SCRUM-64)
 // and the Orval hooks are regenerated. Shape comes from docs/analysis-result.md.
 
-export type ResultStatus = "complete" | "failed";
-export type Side = "left" | "right" | "both" | null;
+export type ResultStatus = 'complete' | 'failed';
+export type Side = 'left' | 'right' | 'both' | null;
 
 export interface RepIssue {
   code: string; // open string, e.g. "knees_cave_in"
