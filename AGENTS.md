@@ -22,13 +22,7 @@ PTAssist is an AI-augmented remote physical therapy platform, built by a 7-perso
 
 ## 2. Status
 
-Sprint 1 is done and Sprint 2 is in progress. Each service has its skeleton:
-
-- **Backend:** FastAPI app with `GET /health` and `GET /me`, Clerk token check and roles, the storage module (Azurite locally), and the first Alembic migration (`users` table).
-- **AI service:** `GET /health` and `POST /analyze` endpoints, the keypoint extraction prototype (`ai/app/keypoints/`), and the shared analysis helpers and framework (`ai/app/analysis/`). No exercise analyzers yet.
-- **Frontend:** Clerk sign-in, role-based routing, and the Orval-generated API hooks.
-
-Not built yet: the rest of the data model, video upload, the background analysis job, and the patient and therapist screens. If a command, file, or folder described here does not exist yet, it is probably part of an open task. Check Jira before creating it.
+The project is under active development: each service has working code, and features are added task by task. If a command, file, or folder described here does not exist yet, it is probably part of an open task. Check Jira before creating it.
 
 ## 3. Architecture (settled)
 
