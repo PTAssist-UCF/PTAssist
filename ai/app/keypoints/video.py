@@ -155,7 +155,10 @@ class OverlayWriter:
 
     def write(self, image: np.ndarray) -> None:
         """Add one BGR frame, the same size as given to the constructor."""
-        self._process.stdin.write(image.tobytes())
+        try:
+            self._process.stdin.write(image.tobytes())
+        except OSError:
+            raise OverlayError("ffmpeg could not write the overlay video") from None
 
     def __enter__(self) -> "OverlayWriter":
         return self

@@ -104,7 +104,7 @@ The unit tests check frame timing, cleanup, and the ffmpeg settings. A local iPh
 
 Synthetic HEVC `.mov` and rotation-metadata checks also passed. Videos are never committed here.
 
-**Download the model.** It uses MediaPipe's Pose Landmarker Full model (about 9 MB). Model files are not kept in git (`*.task` is in `/.gitignore`). Run `python download_model.py` (from any folder). The script verifies the SHA-256 before saving the file to `ai/models/`, where the extractor and the command-line tool look for it. A manual alternative is:
+**Download the model.** It uses MediaPipe's Pose Landmarker Full model (about 9 MB). Model files are not kept in git (`*.task` is in `/.gitignore`). From the repo root, run `python ai/download_model.py`; from `ai/`, run `python download_model.py`. From another folder, pass the script's full path. The script verifies the SHA-256 before saving the file to `ai/models/`, where the extractor and the command-line tool look for it. A manual alternative, from `ai/`, is:
 
 ```bash
 curl -fL --create-dirs -o models/pose_landmarker_full.task https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task

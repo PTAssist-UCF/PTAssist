@@ -137,6 +137,29 @@ def test_overlay_writer_stops_quietly_and_keeps_the_original_error(
     assert process.killed and process.stdin.closed
 
 
+@pytest.mark.parametrize(
+    "write_error",
+    [
+        BrokenPipeError(errno.EPIPE, "Broken pipe"),
+        OSError(errno.EINVAL, "Invalid argument"),
+    ],
+)
+def test_overlay_writer_reports_a_closed_pipe_as_an_overlay_error(
+    monkeypatch: pytest.MonkeyPatch, write_error: OSError
+) -> None:
+    process = FakeFfmpeg(exit_code=1)
+    monkeypatch.setattr(video.subprocess, "Popen", lambda *args, **kwargs: process)
+
+    def fail_write(data: bytes) -> None:
+        raise write_error
+
+    monkeypatch.setattr(process.stdin, "write", fail_write)
+    with pytest.raises(OverlayError, match="overlay"):
+        with video.OverlayWriter(Path("overlay.mp4"), 2, 2) as overlay:
+            overlay.write(np.zeros((2, 2, 3), dtype=np.uint8))
+    assert process.killed and process.stdin.closed
+
+
 def test_frame_json_rounds_scores_and_maps_missing_scores_to_zero() -> None:
     point = SimpleNamespace(x=0.123456, y=-0.012345, visibility=0.98765, presence=None)
     result = SimpleNamespace(pose_landmarks=[[point] * len(NAMES)])
