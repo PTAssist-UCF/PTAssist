@@ -18,7 +18,7 @@ app/
     pose.py             MediaPipe landmarks as JSON-ready data, and the skeleton drawing
     extract.py          Reusable video-to-keypoints function
     __main__.py         The command line: python -m app.keypoints
-  analysis/             Shared geometry, smoothing, and visibility helpers
+  analysis/             Shared geometry, smoothing, visibility, and result framework
     landmarks.py        Plain normalized image landmarks
     geometry.py         Angles, distances, midpoints, and signed line offsets
     smoothing.py        Time-based exponential smoothing with tracking-gap reset
@@ -170,7 +170,7 @@ Each landmark is `[x, y, visibility, presence]`:
 
 `tests/test_keypoints.py` checks the ffmpeg arguments, the JSON conversion, and the drawing. It needs neither ffmpeg nor the model, so CI runs it without them. The prototype was also checked by hand on a 4-second dance clip (a Pexels video, as used in the `tensorflow/tfjs-models` demos; not in the repo) and on variants of it made with ffmpeg: 1920x1080 at 30 fps with audio (came out 1280x720 at 15 fps, no audio), a portrait clip stored sideways with a rotation tag (came out upright, 720x1280), and HEVC in a `.mov`. Every overlay followed the joints.
 
-### Shared analyzer helpers (SCRUM-30)
+### Shared analyzer helpers (SCRUM-30 and SCRUM-50)
 
 The helpers in `app/analysis/` use plain Python data and have no camera, OpenCV,
 or MediaPipe imports. They follow the geometry and confidence conventions in
@@ -250,6 +250,23 @@ An analyzer must abstain from rep and form decisions when this returns `None`.
 Synthetic tests in `tests/test_geometry.py`, `tests/test_smoothing.py`, and
 `tests/test_visibility.py` are collected by the existing `AI tests` PR CI job.
 These helpers do not change the stub endpoint's results or the shared API contract.
+
+`app.analysis.framework` turns exercise measurements into result objects without
+reading video. `RepSplitter(start_threshold, count_threshold, rest_threshold,
+direction)` waits for the start position, counts only a movement that crosses the
+count threshold and returns to rest, and discards a movement after more than 0.75
+seconds without a valid measurement. Pass each smoothed measurement and its video
+timestamp to `update`; a completed movement returns a `RepWindow`.
+
+An exercise analyzer reports `RepObservation` entries with issue codes, timestamps,
+side, and metrics. `build_rep_result` subtracts each issue's penalty once, floors
+the rep score at zero, averages rep scores, and chooses up to three feedback tips.
+For a hold, report `HoldObservation` entries with good-form seconds and use
+`build_hold_result`; it scores each hold by its good-form share and weights the
+overall score by hold duration. Issue messages, tips, and penalties come from
+`IssueDefinition`. Scores round exact halves up. The empty and issue-free
+feedback lines match `docs/analysis-result.md`. `tests/test_framework.py` uses a
+placeholder analyzer to check the resulting contract.
 
 ## API
 

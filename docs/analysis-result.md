@@ -160,7 +160,7 @@ Every code and its patient message is in `ERROR_MESSAGES` in the contract file, 
 
 ## Scoring
 
-The rules below are the spec for the shared analysis framework, built in SCRUM-50 (Sprint 2). Until then, the stub in `ai/app/main.py` returns hand-made scores and feedback that follow them.
+The rules below are implemented in `ai/app/analysis/framework.py` (SCRUM-50). The `POST /analyze` stub in `ai/app/main.py` still returns hand-made scores and feedback until the pipeline is connected in SCRUM-52.
 
 The framework computes every score the same way. Each exercise's analyzer only reports issues. This keeps scores comparable across exercises on the progress chart, and every point lost can be explained to a therapist ("−30 because your knees moved inward").
 
@@ -183,7 +183,7 @@ Score bands, so every screen colors scores the same way:
 
 `feedback` is the short summary at the top of the results screen: what to do next time. It is separate from the issues in `reps`, which say what went wrong in each rep.
 
-- The framework builds it from the issues. It ranks each issue code by how many reps had it times its penalty, because an issue seen on many reps, or a costly one, matters most. It keeps the top 3. SCRUM-50 may refine this, including how ties are ordered.
+- The framework builds it from the issues. It ranks each issue code by how many reps had it times its penalty, because an issue seen on many reps, or a costly one, matters most. It keeps the top 3. Ties use issue code order for a stable result.
 - Each issue code has a tip in the exercise's spec, and the tip is the feedback line. For example, the issue `knees_cave_in` ("Your knees moved inward.") has the tip "Push your knees out so they stay over your toes."
 - The framework also writes two lines itself. Each is the same sentence for every exercise:
   - With no issues: "Great form. Keep it up."
@@ -214,7 +214,7 @@ An unknown name fails with `unknown_exercise`. Adding or renaming an exercise ch
 `analyzer_version` records which version of the analysis code made a result. When an exercise is tuned (Sprint 4), a score of 75 before and after may not mean the same thing. The version tells them apart, for the evaluation report and to explain jumps on the progress chart.
 
 - There is one version for the whole AI service: `ANALYZER_VERSION` in `ai/app/main.py`, in the form `0.1.0`.
-- Raise it whenever anything that can change a result changes: an exercise's analyzer or thresholds, the shared framework (penalties, scoring, feedback, rep splitting), or the keypoint step (MediaPipe or video normalization). The stub uses `0.1.0-stub`.
+- Raise it whenever anything that can change a result changes: an exercise's analyzer or thresholds, the shared framework (penalties, scoring, feedback, rep splitting), or the keypoint step (MediaPipe or video normalization). The current stub uses `0.2.0-stub`.
 - It is null only for failures the backend records itself (`analysis_unavailable`, `analysis_timed_out`), because the backend has no valid result from the AI service. A complete result always has one.
 
 ## Changing the contract
