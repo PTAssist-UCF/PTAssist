@@ -9,28 +9,11 @@ import {
   Stack,
   SimpleGrid,
   Paper,
-  Box,
 } from '@mantine/core';
-import { Link } from 'react-router-dom';
 
 export default function PatientPage() {
   return (
-    <Container size="lg" py="xl">
-      <Group justify="space-between" mb="xl">
-        <Box>
-          <Title order={1} c="teal.8">
-            PTAssist
-          </Title>
-          <Text c="dimmed" size="sm">
-            Patient Portal
-          </Text>
-        </Box>
-        {/* TODO: SCRUM-34 - replace placeholder button with role routing */}
-        <Button component={Link} to="/therapist" variant="light" color="teal" size="sm">
-          Switch to Therapist View
-        </Button>
-      </Group>
-
+    <Container size="lg" py="md">
       <Stack gap="lg">
         <Paper withBorder p="lg" radius="md">
           <Title order={2} size="h3" mb="xs">

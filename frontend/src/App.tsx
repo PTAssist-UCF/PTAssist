@@ -42,7 +42,39 @@ export default function App() {
                 }
               />
               <Route
+                path="/patient/upload"
+                element={
+                  <RoleRoute role="patient">
+                    <PatientPage />
+                  </RoleRoute>
+                }
+              />
+              <Route
+                path="/patient/history"
+                element={
+                  <RoleRoute role="patient">
+                    <PatientPage />
+                  </RoleRoute>
+                }
+              />
+              <Route
                 path="/therapist"
+                element={
+                  <RoleRoute role="therapist">
+                    <TherapistPage />
+                  </RoleRoute>
+                }
+              />
+              <Route
+                path="/therapist/plans"
+                element={
+                  <RoleRoute role="therapist">
+                    <TherapistPage />
+                  </RoleRoute>
+                }
+              />
+              <Route
+                path="/therapist/progress"
                 element={
                   <RoleRoute role="therapist">
                     <TherapistPage />

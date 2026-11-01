@@ -4,7 +4,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 
 import { useGetMe } from '@/api/me';
-import { ApiError, setTokenGetter } from '@/apiClient';
+import { ApiError, setTokenGetter, setUnauthorizedHandler } from '@/apiClient';
+import { shouldRetryQuery } from '@/main';
 
 const ME = { id: '3f6c1a52-8e0b-4d4e-9a77-2c1d5b9e0f41', email: 'pat@example.com' };
 
@@ -33,6 +34,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   setTokenGetter(async () => null);
+  setUnauthorizedHandler(() => {});
 });
 
 describe('useGetMe', () => {
@@ -102,5 +104,49 @@ describe('useGetMe', () => {
     expect(result.current.error).toBeInstanceOf(ApiError);
     expect(result.current.error?.status).toBe(502);
     expect(result.current.error?.body).toBe(brokenBody);
+  });
+
+  it('invokes the unauthorized handler when the API returns 401', async () => {
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    vi.stubGlobal('fetch', fakeApi(401, { detail: 'Session expired' }));
+
+    const { result } = renderUseGetMe();
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not invoke the unauthorized handler on non-401 responses', async () => {
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    vi.stubGlobal('fetch', fakeApi(403, { detail: 'Forbidden' }));
+
+    const { result } = renderUseGetMe();
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+});
+
+describe('shouldRetryQuery', () => {
+  it('does not retry 4xx client errors (e.g. 401, 403, 404)', () => {
+    expect(shouldRetryQuery(0, new ApiError(400, {}))).toBe(false);
+    expect(shouldRetryQuery(0, new ApiError(401, {}))).toBe(false);
+    expect(shouldRetryQuery(0, new ApiError(403, {}))).toBe(false);
+    expect(shouldRetryQuery(0, new ApiError(404, {}))).toBe(false);
+  });
+
+  it('retries server errors (5xx) and network errors up to 3 times', () => {
+    const serverError = new ApiError(500, {});
+    expect(shouldRetryQuery(0, serverError)).toBe(true);
+    expect(shouldRetryQuery(1, serverError)).toBe(true);
+    expect(shouldRetryQuery(2, serverError)).toBe(true);
+    expect(shouldRetryQuery(3, serverError)).toBe(false);
+
+    const networkError = new TypeError('Failed to fetch');
+    expect(shouldRetryQuery(0, networkError)).toBe(true);
+    expect(shouldRetryQuery(2, networkError)).toBe(true);
+    expect(shouldRetryQuery(3, networkError)).toBe(false);
   });
 });

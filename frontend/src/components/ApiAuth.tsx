@@ -1,8 +1,9 @@
 import { useEffect, type ReactNode } from 'react';
 import { useAuth } from '@clerk/react';
 import { useQueryClient } from '@tanstack/react-query';
+import { useLocation, useNavigate } from 'react-router-dom';
 
-import { setTokenGetter } from '@/apiClient';
+import { setTokenGetter, setUnauthorizedHandler } from '@/apiClient';
 
 /**
  * Connects the API client (src/apiClient.ts) to Clerk:
@@ -12,18 +13,33 @@ import { setTokenGetter } from '@/apiClient';
  *   to sign in on this browser never sees the previous user's data. This covers every
  *   way of being signed out: the Sign out button, an expired session, or signing out in
  *   another tab.
+ * - When any API request returns 401 (expired session), the cache is cleared and the
+ *   user is redirected to /sign-in with redirect_url.
  *
  * Render it inside ClerkProvider and QueryClientProvider, around the routes (App.tsx).
  */
 export default function ApiAuth({ children }: { children: ReactNode }) {
   const { getToken, isLoaded, isSignedIn } = useAuth();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const location = useLocation();
 
   // Set while rendering, not in a useEffect, so the token getter is in place before any
   // page below sends its first request (a parent's effects run after its children's).
   // Clerk's getToken waits until Clerk has loaded, gives null when nobody is signed in,
   // and refreshes the token (valid for 60 seconds) by itself.
   setTokenGetter(getToken);
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      queryClient.clear();
+      const here = location.pathname + location.search + location.hash;
+      navigate(`/sign-in?redirect_url=${encodeURIComponent(here)}`, { replace: true });
+    });
+    return () => {
+      setUnauthorizedHandler(() => {});
+    };
+  }, [navigate, location, queryClient]);
 
   useEffect(() => {
     // When this runs, the signed-in pages are already gone from the screen

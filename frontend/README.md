@@ -40,8 +40,9 @@ Sign-in uses Clerk's React SDK (`@clerk/react`) and Clerk's own sign-in and sign
 1. A signed-out visitor who opens any page goes to `/sign-in`. New users follow the form's link to `/sign-up`. Clerk's later steps (for example `/sign-in/factor-one`) stay on those pages.
 2. After sign-in, Clerk sends the user back to the page they asked for (the `redirect_url` in the address).
 3. Every API request carries the user's Clerk token (see Talking to the API). The API creates a new user as a patient on their first request.
-4. A bar above each page shows who is signed in (from `GET /me`) and a **Sign out** button. After sign-out, the sign-in page opens, and its address remembers the page the user left, so the next sign-in on that browser returns there. That is harmless: the API checks every request, and SCRUM-34's role routing sends each user to their own side.
+4. The app shell (`AppShellLayout`) wraps each signed-in page with responsive role-specific navigation, header, who is signed in (from `GET /me`), role badge, and a **Sign out** button. After sign-out, the sign-in page opens, and its address remembers the page the user left, so the next sign-in on that browser returns there.
 5. (SCRUM-34) The app calls `GET /me` for the role, sends patients to `/patient` and therapists to `/therapist`, and blocks the other side's routes.
+6. (SCRUM-56) An expired session (401 answer from any API call) immediately clears cached data and redirects to `/sign-in` with `redirect_url` pointing back to the current page.
 
 The frontend never decides access on its own. The backend checks every request; route guards are only for a clean user experience.
 
@@ -50,8 +51,8 @@ The frontend never decides access on its own. The backend checks every request; 
 | `src/App.tsx`                                          | Sets up Clerk (`ClerkProvider`) and the routes. Clerk changes pages through React Router, so the app never reloads                    |
 | `src/components/RequireSignIn.tsx`                     | Wraps every page that needs a signed-in user: the loading screen while Clerk loads, a redirect to `/sign-in` when nobody is signed in |
 | `src/components/AuthLoading.tsx`                       | The loading screen: a spinner until Clerk loads, or "Sign-in could not load" if Clerk's code can't be downloaded                      |
-| `src/components/ApiAuth.tsx`                           | Gives the API client Clerk's token, and empties the API cache when nobody is signed in                                                |
-| `src/components/AccountBar.tsx`                        | Who is signed in, and Sign out. The app shell (SCRUM-56) will replace it                                                              |
+| `src/components/ApiAuth.tsx`                           | Gives the API client Clerk's token, registers the 401 redirect handler, and empties the API cache when nobody is signed in            |
+| `src/components/AppShellLayout.tsx`                    | Role-specific app shell with responsive header, navigation links (patient/therapist), role badge, and Sign out button                 |
 | `src/pages/SignInPage.tsx`, `src/pages/SignUpPage.tsx` | Clerk's forms, with the loading screen until Clerk loads                                                                              |
 
 **A new page that needs sign-in** goes inside the `<Route element={<RequireSignIn />}>` group in `src/App.tsx`.
@@ -119,7 +120,7 @@ const { data: me, isLoading, error } = useGetMe();
 - **Hook names and files come from the backend:** the route function `def get_me` becomes `useGetMe()`, and the router's tag (`tags=["me"]`) names the file (`src/api/me.ts`).
 - **Every request goes through `apiFetch` in `src/apiClient.ts`.** It adds the API's address (`VITE_API_URL`) and the signed-in user's Clerk token.
 - **Errors:** when the API answers with an error, the hook's `error` is an `ApiError` with `status` and `body`. When the API can't be reached at all (server down, offline, CORS), `error` is a plain error with no `status`, so check `error instanceof ApiError` before reading `error.status`.
-- **Failed requests are retried.** TanStack Query retries a failed request 3 times (after 1, 2, and 4 seconds), so an error such as a `401` reaches `error` after about 7 seconds. The 401 handling (SCRUM-56) decides whether to skip retries for 4xx answers. Tests turn retries off (`retry: false`).
+- **Failed requests and retries:** `shouldRetryQuery` skips retries for 4xx client errors (such as 401 or 403), so session expiration and unauthorized errors respond immediately. Server (5xx) and network errors are retried up to 3 times. If a request answers 401, `apiFetch` notifies `ApiAuth`, which clears the cache and redirects to `/sign-in` with the return URL. Tests turn retries off (`retry: false`).
 - **The token:** `src/components/ApiAuth.tsx` calls `setTokenGetter` with Clerk's `getToken`. It does so while rendering, before any page below it sends its first request (in a `useEffect` it would be too late: a component's effects run after its children's). Clerk's `getToken` waits for Clerk to load, refreshes the token by itself (each one is valid for 60 seconds), and gives `null` when nobody is signed in: the request then goes out without a token, and the API answers `401`. Pages inside `RequireSignIn` only render for a signed-in user, so their requests always carry a token. Outside it, call hooks that need sign-in only once the user is signed in, for example with `enabled: isSignedIn`.
 - **One shared cache:** `src/main.tsx` wraps the app in a `QueryClientProvider`, so every component that calls `useGetMe()` shares one request and one cached answer. TanStack Query refreshes it in the background when needed, for example when you come back to the tab. `ApiAuth` empties the cache whenever nobody is signed in, so the next user never sees the previous user's data.
 - **Browser access (CORS):** the browser lets the web app read the API's answers only if the page's origin is in `CLERK_AUTHORIZED_PARTIES` in the root `/.env` (`http://localhost:5173`, this dev server, by default). If you run the dev server on another port or host, add it there and run `docker compose up -d api` again (or restart the API, if you run it yourself), or requests fail with "Failed to fetch". See `backend/README.md`, Browser access (CORS).
@@ -164,7 +165,7 @@ npm. Lint with ESLint 10 (with `typescript-eslint` and the React hooks plugin's 
 - `npm run lint:fix`: run ESLint with autofix
 - `npm run format`: format code using Prettier
 - `npm run format:check`: verify formatting with Prettier
-- `npm test`: run the Vitest tests once (files named `*.test.ts` or `*.test.tsx`). They run in jsdom, a simulated browser; `src/setupTests.ts` adds the browser features it lacks that our tests need (`matchMedia`, for Mantine)
+- `npm test`: run the Vitest tests once (files named `*.test.ts` or `*.test.tsx`). They run in jsdom, a simulated browser; `src/setupTests.ts` adds the browser features it lacks that our tests need (`matchMedia` and `ResizeObserver`, for Mantine)
 - `npm run generate:api`: regenerate the API hooks in `src/api/` from the backend running on `localhost:8000`
 
 ## Pull request CI
