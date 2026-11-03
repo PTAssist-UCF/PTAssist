@@ -111,7 +111,7 @@ Most exercises are done in reps. The plank is held for time, so it has no reps.
 - A hold ends only when the patient leaves the position, for example by dropping to their knees or standing up. Poor form during the hold, such as sagging hips, is an issue inside that hold, not a break. The exact thresholds belong in the plank's spec.
 - If no hold is seen, the result is complete with `hold_seconds: 0`, no entries in `reps`, and `form_score: null`, like zero reps (see `plank-no-hold.json`).
 
-Whether an exercise is done in reps or held is not part of the contract. Today only the plank is a hold. The AI service knows it from its analyzers. The backend's `Exercise` table will need a field for it, because a plank's plan target is a time in seconds, not reps and sets (SCRUM-43).
+Whether an exercise is done in reps or held is not part of the contract. Today only the plank is a hold. The AI service knows it from its analyzers. The backend's `Exercise` table records it in its `kind` column (`reps` or `hold`), because a plank's plan target is a hold time in seconds instead of reps (SCRUM-43, see Data model in `backend/README.md`).
 
 **One video is one set.** Reps have no set number, so a plan of "3 sets of 30-second planks" means 3 uploads. If we later want several sets in one video, we can add an optional `set` field to each rep (an allowed change, see [Changing the contract](#changing-the-contract)).
 
@@ -207,7 +207,7 @@ These are the five exercises proposed to the sponsor (SCRUM-42). `exercise` in t
 - The AI service: its analyzers in `ai/app/analysis/exercises/`. Until those exist, `HOLD_EXERCISES` and `REP_EXERCISES` in `ai/app/main.py`.
 - The backend: the `Exercise` table (SCRUM-43), in a text column rather than a database enum, so changing the list adds or changes rows, not the table's structure.
 
-An unknown name fails with `unknown_exercise`. Adding or renaming an exercise changes a row in the `Exercise` table, which is done only with a new Alembic migration, never by hand (ask the backend team). The AI service's name must change at the same time. Whether a rename also affects saved sessions depends on the data model in SCRUM-43.
+An unknown name fails with `unknown_exercise`. Adding or renaming an exercise changes a row in the `Exercise` table, which is done only with a new Alembic migration, never by hand (ask the backend team). The AI service's name must change at the same time. Saved sessions point at the exercise's row, not its name, so a rename changes only that row and old sessions follow it (SCRUM-43).
 
 ## Versions
 

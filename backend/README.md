@@ -13,6 +13,7 @@ app/
   main.py    Creates the FastAPI app and includes the routers
   config.py  Settings from environment variables
   db.py      SQLAlchemy engine and the get_db session dependency
+  seed.py    Local dev data: a linked therapist and patient with a plan (see Dev data)
   routes/    HTTP endpoints, grouped by area
   schemas/   Request and response models (Pydantic). analysis_contract.py is a copy, see Analysis results
   models/    Database tables (SQLAlchemy). Base class in base.py
@@ -69,7 +70,22 @@ alembic upgrade head                                   # apply all migrations
 alembic revision --autogenerate -m "add user table"    # create a new one
 ```
 
-To add a table: create the model in `app/models/`, import it in `app/models/__init__.py` (so autogenerate can see it), then run `alembic revision --autogenerate`. Always read the generated file before committing. New migrations are linted and formatted with ruff automatically. Constraint and index names follow the naming convention in `app/models/base.py`.
+To add a table: create the model in `app/models/`, import it in `app/models/__init__.py` (so autogenerate can see it), then run `alembic revision --autogenerate`. Always read the generated file before committing. New migrations are linted and formatted with ruff automatically. Constraint and index names follow the naming convention in `app/models/base.py`. `tests/test_migrations.py` fails if the models and the migrations don't match.
+
+Rows every database needs, like the exercise library, are added by a migration too (see `op.bulk_insert` in `migrations/versions/c35bebbdd455_add_core_data_model.py`), never by hand.
+
+## Dev data (seed)
+
+`app/seed.py` fills your local database with a therapist, a patient linked to them, and a plan with all 5 exercises. Run it from `backend/` after `alembic upgrade head`, with `DATABASE_URL` set to your local database. Never run it against Azure.
+
+```bash
+python -m app.seed                                   # a placeholder patient
+python -m app.seed --patient-email you@example.com   # give the plan to your own account
+```
+
+In Docker Compose, run it in the `api` container: `docker compose exec api python -m app.seed`.
+
+The placeholder users (`therapist@example.com` and `patient@example.com`) have no Clerk account, so nobody can sign in as them. To see the plan in the web app, sign in once (which creates your user as a patient), then run the seed with `--patient-email` and your email. Running it again adds nothing new. The targets are made-up numbers for testing, not clinical advice.
 
 ## Every request
 
@@ -128,17 +144,33 @@ The web app and the API run on different origins: `http://localhost:5173` and `h
 
 ## Data model
 
-| Table | Holds |
-| --- | --- |
-| `User` (`users`) | Clerk id, email, role (`patient` or `therapist`), created time |
-| `TherapistPatient` | Which therapist is linked to which patient |
-| `Exercise` | The exercise library (5 exercises for the proof of concept): its name in the API, such as `squat`, and whether it is done in reps or held (the plank) |
-| `Plan` | A therapist's plan for one patient |
-| `PlanExercise` | An exercise in a plan, with targets (reps, sets, frequency, or a hold time in seconds for a hold exercise) |
-| `Session` | One uploaded video (one set) for a plan exercise, with status |
-| `SessionResult` | The analysis result of a finished session, complete or failed (JSONB, see Analysis results) |
+| Model (table) | File | Holds |
+| --- | --- | --- |
+| `User` (`users`) | `user.py` | Clerk id, email, role (`patient` or `therapist`), created time |
+| `TherapistPatient` (`therapist_patients`) | `therapist_patient.py` | Which therapist is linked to which patient |
+| `Exercise` (`exercises`) | `exercise.py` | The exercise library: its name in the API, such as `squat`, a display name, and its kind: `reps`, or `hold` for the plank |
+| `Plan` (`plans`) | `plan.py` | A therapist's plan for one patient |
+| `PlanExercise` (`plan_exercises`) | `plan.py` | An exercise in a plan, with targets: reps per set (or a hold time in seconds for a hold exercise), sets, and times per week |
+| `ExerciseSession` (`sessions`) | `session.py` | One uploaded video (one set) for a plan exercise, with its status: `processing`, `complete`, or `failed` |
+| `SessionResult` (`session_results`) | `session.py` | The analysis result of a finished session, complete or failed, in one JSONB column (see Analysis results) |
+
+```
+users ──< therapist_patients >── users        (therapist, patient)
+users ──< plans ──< plan_exercises >── exercises
+                    plan_exercises ──< sessions ──── session_results (0 or 1)
+```
 
 Table names are plural snake_case (`users`), and primary keys are UUIDs (see `app/models/user.py`). The schema changes only through Alembic migrations. Never edit the database by hand, and never change a migration after it is merged.
+
+How the tables fit together, and why (SCRUM-43):
+
+- **The session model is `ExerciseSession`**, not `Session`, because routes also use SQLAlchemy's `Session` for the database connection. The table is still `sessions`, and the API still says "session".
+- **Exercises are rows, added by migrations.** The migration that creates `exercises` also adds the 5 exercises, so every database has them, Azure included. `name` is plain text, not a database enum, and other tables point at the exercise's `id`, so adding or renaming an exercise is a new migration that adds or changes a row. Its `name` must match the AI service's (`docs/analysis-result.md`, Exercise names).
+- **A plan exercise has either `reps` or `hold_seconds`**, never both: reps per set for exercises done in reps, a hold time for the plank. Both kinds have `sets`. One video is one set, so `sets` is how many videos to upload each time, and `times_per_week` is how many days a week (1 to 7). The database checks that exactly one target is set and that targets are positive. It can't check that the target fits the exercise's kind, so the plan endpoints must (SCRUM-63). For `side_leg_raise`, `reps` counts both sides together, like the result's `rep_count`.
+- **Ownership goes through the plan.** A session belongs to a plan exercise, which belongs to a plan, whose `patient_id` is the owner. A therapist may see it if they are linked to that patient in `therapist_patients`. The database can't check roles (they are in `users`), so routes check that the therapist in a link or plan is a therapist and the patient a patient.
+- **A session has at most one result.** `session_results.session_id` is its primary key. The failure reason is inside the JSON, not on the session (`docs/analysis-result.md`, How the backend stores it).
+- **Results are kept.** A plan exercise that has sessions can't be deleted (the foreign key refuses), so changing a plan must not delete exercises that have uploads.
+- **Each link is stored once:** the same therapist and patient can't be linked twice, and nobody can be linked to themselves. A patient may have several therapists, and several plans. Whether a patient gets only one plan at a time is decided with the plan endpoints (SCRUM-63).
 
 ## Session lifecycle
 
@@ -246,7 +278,7 @@ A connection string contains `;`, so in `/.env` wrap any value other than `UseDe
 
 ## Testing
 
-pytest, against a real Postgres database: `TEST_DATABASE_URL`, by default `postgresql+psycopg://ptassist:ptassist@localhost:5433/ptassist_test`. Tests always use it in place of `DATABASE_URL`. Each run builds the schema with `alembic upgrade head`, empties the tables before every test, and drops everything at the end with `alembic downgrade base`, so every run also checks that the migrations work both ways. Never point it at a database you want to keep.
+pytest, against a real Postgres database: `TEST_DATABASE_URL`, by default `postgresql+psycopg://ptassist:ptassist@localhost:5433/ptassist_test`. Tests always use it in place of `DATABASE_URL`. Each run builds the schema with `alembic upgrade head`, empties the tables before every test, and drops everything at the end with `alembic downgrade base`, so every run also checks that the migrations work both ways. Tables the migrations fill in (`exercises`) are not emptied (`MIGRATION_DATA_TABLES` in `tests/conftest.py`), so tests must not change them. Never point it at a database you want to keep.
 
 Start the test database once with Docker. It uses port 5433 so it does not clash with the Compose database (5434) or a Postgres installed on your computer (5432):
 
