@@ -22,7 +22,7 @@ PTAssist is an AI-augmented remote physical therapy platform, built by a 7-perso
 
 ## 2. Status
 
-The repo is at the scaffold stage: folders and docs only, no application code yet. Each service gets its skeleton during Sprint 1 (Sep 28 to Oct 11, 2026). If a command, file, or folder described here does not exist yet, it is probably part of an open task. Check Jira before creating it.
+The project is under active development: each service has working code, and features are added task by task. If a command, file, or folder described here does not exist yet, it is probably part of an open task. Check Jira before creating it.
 
 ## 3. Architecture (settled)
 
