@@ -54,6 +54,16 @@ def get_current_user(
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
+def get_current_therapist(user: CurrentUser) -> User:
+    """The caller's User, if they are a therapist. Anyone else gets 403 (wrong role)."""
+    if user.role != Role.THERAPIST:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only therapists can do this")
+    return user
+
+
+CurrentTherapist = Annotated[User, Depends(get_current_therapist)]
+
+
 def create_patient(db: Session, clerk_id: str, email: str) -> User:
     """Insert a patient, or reuse the row if a parallel first call just made it."""
     db.execute(

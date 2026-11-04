@@ -99,6 +99,8 @@ The placeholder users (`therapist@example.com` and `patient@example.com`) have n
 3. Check the role (patient or therapist). Wrong role means `403`.
 4. Check ownership: patients see only their own data, therapists see only linked patients. Not yours means `404`.
 
+Steps 1 and 2 are the `CurrentUser` dependency (see Sign-in). For step 3, a therapist-only route takes `CurrentTherapist` instead, from the same file: it answers `403` to anyone who is not a therapist. For step 4, `get_link` in `app/auth/ownership.py` returns a therapist's link to a patient, or `None` when they are not linked.
+
 Roles live in our database, not in Clerk. Therapists are promoted by the team with a script.
 
 ## Sign-in (Clerk)
@@ -222,10 +224,38 @@ Each route's function name becomes its operation id in the API description (`/op
 | --- | --- | --- |
 | Me | `GET /me` | Anyone signed in |
 | Exercises | `GET /exercises` | Anyone signed in |
-| Patients | `GET/POST/DELETE /therapist/patients` | Therapist |
+| Patients | `GET/POST /therapist/patients`, `DELETE /therapist/patients/{patient_id}` | Therapist |
 | Plans | `POST/PUT /plans`, `GET /plans/me` | Therapist, patient |
 | Sessions | `POST /sessions`, `GET /sessions/{id}`, `GET /sessions` | Patient (therapist can read linked patients') |
 | Progress | `GET /patients/{id}/progress` | Therapist |
+
+## Linking patients (SCRUM-62)
+
+A therapist links a patient by the email the patient signed in with, and then sees only their linked patients' data. These endpoints are for therapists only: anyone else, patients included, gets `403`.
+
+| Endpoint | Does | Success |
+| --- | --- | --- |
+| `POST /therapist/patients` with `{"email": "..."}` | Links the patient who uses that email | `201` with the linked patient |
+| `GET /therapist/patients` | Lists the caller's linked patients, ordered by email | `200` with a list (empty if none) |
+| `DELETE /therapist/patients/{patient_id}` | Removes the caller's link to that patient | `204`, no body |
+
+A linked patient is `{"id", "email", "linked_at"}`: the patient's user id (the `patient_id` to unlink), their email, and when this therapist linked them.
+
+- **Finding the patient.** The email is compared ignoring case and the spaces around it, and only with patients. The patient must have signed in once, so that their user exists. An email that no patient uses gets `404` with the same message whether nobody or a therapist uses it, so the answer doesn't tell who has an account. This also means nobody can link themselves: the caller is a therapist, not a patient.
+- **Linking twice gets `409`**, also when two requests arrive at once (the database keeps one link per pair). The existing link stays as it was.
+- **An email that two patients use gets `409`.** Our copy of an email is never updated (see Sign-in), so an old user row can share its email with a newer one. The API never guesses which patient is meant; the team fixes the data.
+- **A patient can have several therapists.** Each therapist sees only their own links.
+- **Unlinking removes only the link.** A patient the caller is not linked to (an unknown id, or another therapist's patient) gets `404`, not `403`, so the answer doesn't tell who is linked to whom. Plans, sessions, and results are kept (results are never deleted). The therapist just stops seeing them, because every therapist check goes through the link, and sees them again after linking the patient again. What happens to a plan whose therapist is no longer linked (for example, whether the patient still sees it and uploads to it) is decided with the plan endpoints (SCRUM-63).
+
+| Status | When |
+| --- | --- |
+| `401` | No valid token |
+| `403` | The caller is not a therapist |
+| `404` | Link: no patient uses that email. Unlink: the caller is not linked to that patient |
+| `409` | Link: already linked, or more than one patient uses that email |
+| `422` | Link: the email is missing, blank, or longer than 320 characters |
+
+**Frontend handoff:** router tag `patients`; operation ids `link_patient`, `list_linked_patients`, and `unlink_patient`. Regenerate the hooks from the running API (`npm run generate:api`); the generated frontend files are left to the frontend team. To try the endpoints in `/docs`, promote your local account to therapist first (see Clerk settings). `tests/test_therapist_patients.py` covers each endpoint, including the wrong role and the wrong owner.
 
 ## Video upload and session status (SCRUM-44)
 
