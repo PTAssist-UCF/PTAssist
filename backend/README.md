@@ -14,6 +14,7 @@ app/
   config.py  Settings from environment variables
   db.py      SQLAlchemy engine and the get_db session dependency
   seed.py    Local dev data: a linked therapist and patient with a plan (see Dev data)
+  promote_therapist.py  Makes a user a therapist, by email (see Promote a therapist)
   routes/    HTTP endpoints, grouped by area
   schemas/   Request and response models (Pydantic). analysis_contract.py is a copy, see Analysis results
   models/    Database tables (SQLAlchemy). Base class in base.py
@@ -92,6 +93,30 @@ In Docker Compose, run it in the `api` container: `docker compose exec api pytho
 
 The placeholder users (`therapist@example.com` and `patient@example.com`) have no Clerk account, so nobody can sign in as them. To see the plan in the web app, sign in once (which creates your user as a patient), then run the seed with `--patient-email` and your email. Running it again adds nothing new. The targets are made-up numbers for testing, not clinical advice.
 
+## Promote a therapist
+
+New users are patients. To make someone a therapist, they sign in to the web app once (which creates their user), then a team member runs `app/promote_therapist.py` with their email. Run it from `backend/`, with `DATABASE_URL` set to the database to change:
+
+```bash
+python -m app.promote_therapist --email someone@example.com            # make them a therapist
+python -m app.promote_therapist --email someone@example.com --demote   # make them a patient again
+```
+
+In Docker Compose, run it in the `api` container: `docker compose exec api python -m app.promote_therapist --email someone@example.com`. For Azure, run it as a Container Apps job, not from your computer (the database's firewall only lets our Azure services in): see `infra/README.md`, Promote a therapist.
+
+| The email belongs to | What happens | Exit code |
+| --- | --- | --- |
+| Nobody | Nothing changes. The person must sign in to the web app once first | 1 |
+| More than one user | Nothing changes, because it can't tell which one is meant. This can happen if someone deleted their Clerk account and signed up again: ask the backend team | 1 |
+| A therapist | Nothing changes, and it says so. Running it twice is safe | 0 |
+| A patient who has a therapist or a plan | Nothing changes, unless you add `--force` (see below) | 1 |
+| Any other patient | They become a therapist | 0 |
+
+- The email's case and any spaces around it don't matter.
+- **Why a patient with a therapist or a plan is refused:** a new therapist has only signed in once, so a patient with a therapist link or a plan is most likely the wrong email. A therapist can link patients and see their data, so promoting the wrong person matters. If it is the right person (for example, a team member who tried the patient side), run it again with `--force`. Their links, plans, and sessions are kept, but as a therapist they can no longer use them. `--demote` checks the same way: a therapist with linked patients or plans is refused without `--force`.
+- It prints the user's id, never their email, because in Azure its output goes to the logs.
+- The person sees their new side of the web app after they reload it.
+
 ## Every request
 
 1. Verify the Clerk token. No valid token means `401`.
@@ -99,7 +124,7 @@ The placeholder users (`therapist@example.com` and `patient@example.com`) have n
 3. Check the role (patient or therapist). Wrong role means `403`.
 4. Check ownership: patients see only their own data, therapists see only linked patients. Not yours means `404`.
 
-Roles live in our database, not in Clerk. Therapists are promoted by the team with a script.
+Roles live in our database, not in Clerk. Therapists are promoted by the team with a script (see Promote a therapist).
 
 ## Sign-in (Clerk)
 
@@ -133,7 +158,7 @@ Never log tokens or emails. The database engine hides query values (`hide_parame
 - Users must sign up with an email address (Clerk Dashboard, **User & authentication**). The API needs it to create their row.
 - `CLERK_AUTHORIZED_PARTIES` lists the web app's origins: `http://localhost:5173` (the Vite dev server) locally, and the Static Web Apps URL in Azure. It is also the list of origins that browsers may call the API from (see Browser access).
 
-Until the promote script exists (SCRUM-65), promote a local test account by hand: `UPDATE users SET role = 'therapist' WHERE email = '<email>';`
+To make an account a therapist, sign in with it once, then run the promote script (see Promote a therapist).
 
 ### Browser access (CORS)
 
