@@ -20,6 +20,7 @@ from app.models import (
     Plan,
     PlanExercise,
     Role,
+    SessionResult,
     SessionStatus,
     TherapistPatient,
     User,
@@ -28,6 +29,7 @@ from app.schemas.analysis_contract import (
     ERROR_MESSAGES,
     MAX_VIDEO_SECONDS,
     MIN_VIDEO_SECONDS,
+    AnalysisResult,
 )
 
 
@@ -130,7 +132,6 @@ def test_upload_stores_private_video_and_creates_processing_session(
     assert result["created_at"]
     saved = db.get(ExerciseSession, uuid.UUID(result["id"]))
     assert saved.video_key == f"sessions/{saved.id}{extension}"
-    assert saved.result is None
     link = storage.read_url(saved.video_key)
     stored = httpx.get(link)
     assert stored.status_code == 200
@@ -139,7 +140,8 @@ def test_upload_stores_private_video_and_creates_processing_session(
     assert httpx.get(link.split("?", 1)[0]).status_code == 403
     status = client.get("/sessions/" + result["id"], headers=clerk.headers("user_p"))
     assert status.status_code == 200
-    assert status.json() == result
+    # The background analysis has run by now (the fake AI service answered).
+    assert status.json() == {**result, "status": "complete"}
 
 
 def test_client_content_type_is_not_used_for_the_stored_blob(
@@ -346,7 +348,7 @@ def test_linked_therapist_can_read_status(client, clerk, assignment, make_video)
     created = post_video(client, clerk, assignment, make_video()).json()
     response = client.get("/sessions/" + created["id"], headers=clerk.headers("user_t"))
     assert response.status_code == 200
-    assert response.json() == created
+    assert response.json() == {**created, "status": "complete"}
 
 
 @pytest.mark.parametrize("status", [SessionStatus.COMPLETE, SessionStatus.FAILED])
@@ -368,7 +370,7 @@ def test_missing_session_is_not_found(client, clerk, assignment):
 
 
 def test_storage_failure_leaves_no_session(
-    client, clerk, assignment, db, storage, make_video, monkeypatch
+    client, clerk, assignment, db, storage, make_video, monkeypatch, ai_service
 ):
     keys = []
     original_upload = storage.upload
@@ -385,10 +387,11 @@ def test_storage_failure_leaves_no_session(
     assert sessions_count(db) == 0
     assert len(keys) == 1
     assert httpx.get(storage.read_url(keys[0])).status_code == 404
+    assert ai_service.requests == []  # nothing to analyze
 
 
 def test_failed_commit_removes_the_uploaded_file(
-    client, clerk, assignment, db, storage, make_video, monkeypatch
+    client, clerk, assignment, db, storage, make_video, monkeypatch, ai_service
 ):
     keys = []
     original_upload = storage.upload
@@ -407,6 +410,7 @@ def test_failed_commit_removes_the_uploaded_file(
     assert sessions_count(db) == 0
     assert len(keys) == 1
     assert httpx.get(storage.read_url(keys[0])).status_code == 404
+    assert ai_service.requests == []  # nothing to analyze
 
 
 def test_no_database_connection_is_held_while_checking_and_storing_the_video(
@@ -441,8 +445,63 @@ def test_no_database_connection_is_held_while_checking_and_storing_the_video(
     assert sessions_count(db) == 1
 
 
+def test_upload_is_analyzed_in_the_background_and_ends_complete(
+    client, clerk, assignment, db, storage, make_video, ai_service
+):
+    contents = make_video()
+    response = post_video(client, clerk, assignment, contents)
+    assert response.status_code == 201
+    created = response.json()
+    assert created["status"] == "processing"  # answered before the analysis ran
+    [request] = ai_service.requests
+    assert request["session_id"] == created["id"]
+    assert request["exercise"] == "squat"
+    assert httpx.get(request["video_url"]).content == contents  # a working read link
+    status = client.get("/sessions/" + created["id"], headers=clerk.headers("user_p"))
+    assert status.json()["status"] == "complete"
+    saved = db.get(SessionResult, uuid.UUID(created["id"]))
+    assert saved.result == ai_service.body
+
+
+def test_upload_with_the_ai_service_down_ends_failed(
+    client, clerk, assignment, db, make_video, ai_service
+):
+    ai_service.error = httpx.ConnectError("Connection refused")
+    created = post_video(client, clerk, assignment, make_video()).json()
+    status = client.get("/sessions/" + created["id"], headers=clerk.headers("user_p"))
+    assert status.json()["status"] == "failed"
+    saved = db.get(SessionResult, uuid.UUID(created["id"]))
+    assert saved.result == AnalysisResult.failed(
+        "analysis_unavailable", analyzer_version=None
+    ).model_dump(mode="json")
+
+
+def test_upload_schedules_the_analysis_once_the_session_is_saved(
+    client, clerk, assignment, make_video, monkeypatch
+):
+    videos = []
+    scheduled = []
+
+    def check(video):
+        videos.append(video)
+        return uploads.validate_video(video)
+
+    def analyze(session_id):
+        # Like the job, outside the request: the session must already be committed.
+        with Session(engine) as other:
+            status = other.get(ExerciseSession, session_id).status
+        # The upload's temporary file must not stay on disk during the analysis.
+        scheduled.append((session_id, status, videos[0].file.closed))
+
+    monkeypatch.setattr("app.routes.sessions.validate_video", check)
+    monkeypatch.setattr("app.routes.sessions.analyze_session", analyze)
+    response = post_video(client, clerk, assignment, make_video())
+    assert response.status_code == 201
+    assert scheduled == [(uuid.UUID(response.json()["id"]), "processing", True)]
+
+
 def test_filename_and_video_details_are_not_logged(
-    client, clerk, assignment, make_video, caplog
+    client, clerk, assignment, make_video, caplog, ai_service
 ):
     filename = "private-patient-name.mp4"
     caplog.set_level(logging.INFO)
@@ -450,6 +509,10 @@ def test_filename_and_video_details_are_not_logged(
     assert response.status_code == 201
     assert filename not in caplog.text
     assert "Bearer " not in caplog.text
+    # The background analysis logs the session id, never the video's read link.
+    assert response.json()["id"] in caplog.text
+    assert ai_service.requests[0]["video_url"] not in caplog.text
+    assert "sig=" not in caplog.text
 
 
 def test_openapi_describes_upload_form_and_response():

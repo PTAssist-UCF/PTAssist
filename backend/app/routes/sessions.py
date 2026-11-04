@@ -1,17 +1,30 @@
-"""Patient uploads and session status, scoped through the owning plan."""
+"""Patient uploads and session status, scoped through the owning plan.
 
+A stored upload is handed to the background analysis (app/jobs/analysis.py).
+"""
+
+import contextlib
 import logging
 import uuid
 from typing import Annotated
 
 from azure.core.exceptions import AzureError
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+)
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.auth.current_user import CurrentUser
 from app.db import get_db
+from app.jobs.analysis import analyze_session
 from app.models import (
     ExerciseSession,
     Plan,
@@ -52,6 +65,7 @@ def create_session(
     video: Annotated[UploadFile, File(json_schema_extra={"format": "binary"})],
     db: Database,
     storage: Annotated[Storage, Depends(get_storage)],
+    background_tasks: BackgroundTasks,
 ) -> SessionResponse:
     plan_exercise_id = target.id
     # End the transaction the sign-in and ownership checks opened, so its database
@@ -89,7 +103,14 @@ def create_session(
         raise HTTPException(
             503, "Could not save the video. Please try again."
         ) from None
-    # SCRUM-45 adds the background analysis handoff. This task leaves it processing.
+    # FastAPI closes the upload only after background tasks finish. Close it now, so
+    # its temporary file (up to MAX_VIDEO_UPLOAD_BYTES) is not kept on disk during
+    # the analysis, which can take minutes. An error here must not stop the analysis:
+    # the session is committed, and an exception would cancel the background task.
+    with contextlib.suppress(OSError):
+        video.file.close()
+    # Runs after the response is sent; the job opens its own database session.
+    background_tasks.add_task(analyze_session, session_id)
     return response
 
 

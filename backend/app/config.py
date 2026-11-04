@@ -1,5 +1,6 @@
 """App settings, read from environment variables (see /.env.example)."""
 
+import math
 import os
 
 DATABASE_URL = os.environ["DATABASE_URL"]
@@ -31,3 +32,16 @@ STORAGE_CONTAINER = os.environ.get("STORAGE_CONTAINER") or "videos"
 MAX_VIDEO_UPLOAD_BYTES = int(os.environ.get("MAX_VIDEO_UPLOAD_BYTES", 500 * 1024**2))
 if MAX_VIDEO_UPLOAD_BYTES <= 0:
     raise ValueError("MAX_VIDEO_UPLOAD_BYTES must be positive")
+
+# The AI service, which only the API calls (POST /analyze). Locally
+# http://localhost:8001, in Docker Compose http://ai:8001, in Azure the AI container
+# app's internal URL.
+AI_SERVICE_URL = os.environ.get("AI_SERVICE_URL") or "http://localhost:8001"
+# How long the background analysis waits for POST /analyze to answer before it saves
+# the session as failed with analysis_timed_out. A 2-minute clip may take 3 minutes to
+# analyze from a cold start, and Azure Container Apps ends any request after 240
+# seconds, so keep it between 180 and 240 in Azure (docs/analysis-result.md, Clip
+# limits and timing).
+AI_SERVICE_TIMEOUT_SECONDS = float(os.environ.get("AI_SERVICE_TIMEOUT_SECONDS", 230))
+if not (math.isfinite(AI_SERVICE_TIMEOUT_SECONDS) and AI_SERVICE_TIMEOUT_SECONDS > 0):
+    raise ValueError("AI_SERVICE_TIMEOUT_SECONDS must be a positive number")

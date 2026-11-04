@@ -28,3 +28,22 @@ def test_upload_limit_must_be_positive(
     monkeypatch.setenv("MAX_VIDEO_UPLOAD_BYTES", value)
     with pytest.raises(ValueError, match="MAX_VIDEO_UPLOAD_BYTES"):
         read_settings()
+
+
+def test_ai_service_timeout_fits_between_the_analysis_target_and_azure_cutoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Longer than the 3 minutes a 2-minute clip may take, shorter than the 240 seconds
+    after which Azure ends the request (docs/analysis-result.md, Clip limits and
+    timing)."""
+    monkeypatch.delenv("AI_SERVICE_TIMEOUT_SECONDS", raising=False)
+    assert 180 < read_settings()["AI_SERVICE_TIMEOUT_SECONDS"] < 240
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "nan", "inf"])
+def test_ai_service_timeout_must_be_a_positive_number(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("AI_SERVICE_TIMEOUT_SECONDS", value)
+    with pytest.raises(ValueError, match="AI_SERVICE_TIMEOUT_SECONDS"):
+        read_settings()

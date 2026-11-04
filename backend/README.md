@@ -4,7 +4,7 @@ FastAPI service. It is the only entry point into PTAssist: the frontend talks on
 
 ## Stack
 
-FastAPI, SQLAlchemy, Alembic, PostgreSQL (psycopg 3 driver), Clerk's Python SDK (`clerk-backend-api`), the Azure Blob SDK (`azure-storage-blob`), pytest, ruff. Runtime dependencies in `requirements.txt`; test and lint tools in `requirements-dev.txt`.
+FastAPI, SQLAlchemy, Alembic, PostgreSQL (psycopg 3 driver), Clerk's Python SDK (`clerk-backend-api`), the Azure Blob SDK (`azure-storage-blob`), httpx (calls to the AI service), pytest, ruff. Runtime dependencies in `requirements.txt`; test and lint tools in `requirements-dev.txt`.
 
 ## Layout
 
@@ -185,14 +185,14 @@ upload -> processing -> complete
 ```
 
 1. `POST` upload: validate the file (type, size, and length between `MIN_VIDEO_SECONDS` and `MAX_VIDEO_SECONDS` from `app/schemas/analysis_contract.py`, currently 3 seconds to 2 minutes; import them, don't hard-code them), store it, create the `Session` as `processing`. A file that fails these checks gets an HTTP error, and no session is created.
-2. A FastAPI background task creates a 15-minute read link and calls the AI service `POST /analyze`.
-3. The result is saved to `SessionResult`, and the session's status becomes the result's `status`: `complete` or `failed`.
+2. A FastAPI background task (`app/jobs/analysis.py`, see [Background analysis](#background-analysis-scrum-45)) creates a 15-minute read link and calls the AI service `POST /analyze`.
+3. The result is checked against the contract and saved to `SessionResult`, and the session's status becomes the result's `status`: `complete` or `failed`, in the same transaction.
 4. If there is no valid result, the backend saves a failed result itself: `analysis_unavailable` when the AI service could not be reached, answered with an error, or sent a result that does not match the contract, and `analysis_timed_out` when it did not answer in time.
-5. Sessions stuck in `processing` too long are also saved as failed, with `analysis_timed_out`.
+5. Sessions stuck in `processing` too long are also saved as failed, with `analysis_timed_out` (SCRUM-66, not built yet).
 
 A session's result is saved once: after a session is `complete` or `failed` it never changes, and a later answer for it is dropped.
 
-The AI service may take up to 3 minutes for a 2-minute clip, counting from a cold start. On Azure, Container Apps ends any HTTP request after 240 seconds, so the timeout in step 2 must be between 3 and 4 minutes (for example 230 seconds). The stuck cutoff in step 5 must be longer than that timeout, so the cleanup never fails a session the background task is still waiting on. See [Clip limits and timing](../docs/analysis-result.md#clip-limits-and-timing).
+The AI service may take up to 3 minutes for a 2-minute clip, counting from a cold start. On Azure, Container Apps ends any HTTP request after 240 seconds, so the timeout in step 2 (`AI_SERVICE_TIMEOUT_SECONDS`, 230 seconds by default) must be between 3 and 4 minutes. The stuck cutoff in step 5 must be longer than that timeout, so the cleanup never fails a session the background task is still waiting on. See [Clip limits and timing](../docs/analysis-result.md#clip-limits-and-timing).
 
 The frontend polls the session status. Once it is `complete` or `failed`, the `SessionResult` has the details, including the failure reason. Later, a job queue can replace the background task without changing the API.
 
@@ -306,14 +306,16 @@ patient. Other patients, unlinked therapists, and unknown IDs receive `404`.
 The response never exposes a private storage key or a signed video URL. Results
 and progress are handled separately in SCRUM-64.
 
-**Analysis does not start in this task.** New sessions remain `processing` until
-SCRUM-45 adds the background handoff. That task should read `session.video_key`
-and request a temporary read URL through `app/storage/`. Migration `e846d97b14af`
-adds the unique key, and `163e3f3a47c4` makes it required (`NOT NULL`), so every
-session has a stored video. No session can lack a key (the upload route is the only
-code that creates sessions), so that migration neither fills in nor deletes rows: if
-one without a key exists anyway, it stops with "contains null values" and changes
-nothing, rather than deleting the session and its result.
+**Analysis starts after the response.** Once the session is committed, the route
+schedules the background analysis (next section) and answers `201` with the session
+`processing`; the frontend polls `GET /sessions/{session_id}` until it is `complete`
+or `failed`. The analysis reads `session.video_key` and gets a temporary read URL
+through `app/storage/`. Migration `e846d97b14af` adds the unique key, and
+`163e3f3a47c4` makes it required (`NOT NULL`), so every session has a stored video.
+No session can lack a key (the upload route is the only code that creates sessions),
+so that migration neither fills in nor deletes rows: if one without a key exists
+anyway, it stops with "contains null values" and changes nothing, rather than
+deleting the session and its result.
 
 **Frontend handoff:** router tag `sessions`; operation IDs `create_session` and
 `get_session`. The API describes the upload form and `SessionResponse` in
@@ -327,6 +329,60 @@ directory with ffmpeg (no recordings are committed). It exercises real ffprobe,
 Postgres, and Azurite for uploads, permission checks, duration boundaries, private
 retrieval, rollback cleanup, and that no database connection is held while a video
 is checked and stored. `tests/test_uploads.py` covers inspection errors.
+
+## Background analysis (SCRUM-45)
+
+`app/jobs/analysis.py` has the job: `analyze_session(session_id)`. `POST /sessions`
+schedules it as a FastAPI background task once the session is committed, so it runs
+after the `201` is sent. Before that, the route closes the upload's temporary file:
+FastAPI would otherwise keep it on disk until the analysis ends. The job:
+
+1. Loads the session's status, `video_key`, and exercise name in a short read, so
+   no database connection is held during the call. A session that is gone or no
+   longer `processing` is skipped, without calling the AI service.
+2. Makes a 15-minute read link with `storage.read_url` and sends `AnalyzeRequest`
+   (session id, exercise name, link) to `POST {AI_SERVICE_URL}/analyze` with httpx.
+   It waits up to 10 seconds to connect and `AI_SERVICE_TIMEOUT_SECONDS` (default
+   230) for the answer.
+3. Checks the answer with `AnalysisResult.model_validate`, then saves it in one
+   transaction: it locks the session's row, and only if the session is still
+   `processing` adds the `SessionResult` and sets the status to the result's
+   `status`. Otherwise the answer is dropped, so a result is saved once.
+
+| What happens | Saved result |
+| --- | --- |
+| `200` with a valid complete result | The result as sent; status `complete` |
+| `200` with a valid failed result (the AI service's own failure, such as `no_person`) | The result as sent; status `failed` |
+| Any other status (such as a `500` crash, or `422` for a request it refused) | `analysis_unavailable` |
+| An answer that is not JSON or does not match the contract | `analysis_unavailable` |
+| No connection: refused, unknown host, no connection within 10 seconds, or the connection broke | `analysis_unavailable` |
+| No answer within `AI_SERVICE_TIMEOUT_SECONDS` | `analysis_timed_out` |
+| An empty `video_key` (the AI service is not called) | `analysis_unavailable` |
+| Any other error in the job, such as a bug | `analysis_unavailable` |
+| The database refuses the result (for example text with the character `\u0000`) | `analysis_unavailable` in its place |
+
+The backend's own failures are `AnalysisResult.failed(code, analyzer_version=None)`,
+so they meet the contract and carry the standard patient message. Every path ends
+`complete` or `failed`, except one: if the database itself can't be reached, nothing
+can be saved, and the session stays `processing` until the stuck-session cleanup
+(SCRUM-66). The same happens if the API container stops during an analysis (a deploy,
+or scaling in).
+
+Log lines carry only the session id and the outcome (such as "failed with
+analysis_timed_out: no answer in time"), never the read link, an exception's
+message, or the AI service's answer. Only `WARNING` and above show without logging
+configuration, which covers every failure.
+
+Each running analysis waits in one of the API's worker threads, the same pool of 40
+threads (anyio's default) that runs its other routes. That is plenty for the proof
+of concept; the job queue planned as a stretch goal would remove the limit.
+
+Until the real pipeline is connected (SCRUM-52), the AI service's `POST /analyze` is
+a stub that returns made-up results, so a local upload ends `complete` with those.
+
+Tests never call the AI service: see Testing. `tests/test_analysis_job.py` covers
+each row above, a session that finishes during the call, and a job that runs twice.
+It uses real sockets for an AI service that is down or never answers.
 
 ## Storage
 
@@ -365,7 +421,7 @@ Read links made in Compose start with `http://azurite:10000/`. The AI service co
 
 ## Config
 
-Read from environment variables (see `/.env.example`): database URL, Clerk settings, storage settings, and the AI service URL. No secrets in code. Settings are defined in `app/config.py`. Add new ones there and in `/.env.example`.
+Read from environment variables (see `/.env.example`): database URL, Clerk settings, storage settings, and the AI service's URL and timeout. No secrets in code. Settings are defined in `app/config.py`. Add new ones there and in `/.env.example`.
 
 | Variable | Read by | What |
 | --- | --- | --- |
@@ -375,6 +431,8 @@ Read from environment variables (see `/.env.example`): database URL, Clerk setti
 | `STORAGE_CONNECTION_STRING` | API | Storage account to use. `UseDevelopmentStorage=true` locally (Azurite on `127.0.0.1:10000`). In Azure, the storage account's connection string: it holds the account key, so it is a secret. See Storage |
 | `STORAGE_CONTAINER` | API | Private blob container for videos. Default `videos`. Created if missing |
 | `MAX_VIDEO_UPLOAD_BYTES` | API, Docker Compose | Maximum uploaded video size in bytes; positive integer, default 524288000 (500 MiB). The API needs about twice this in temporary disk space per upload being checked. Independent of the shared duration limits |
+| `AI_SERVICE_URL` | API | Where the background analysis sends `POST /analyze`. Default `http://localhost:8001`. Docker Compose sets `http://ai:8001`; in Azure, the AI container app's internal URL. See Background analysis |
+| `AI_SERVICE_TIMEOUT_SECONDS` | API | Seconds to wait for `POST /analyze` to answer before the session fails with `analysis_timed_out`. Positive number, default 230. In Azure keep it between 180 and 240 (see Session lifecycle) |
 | `TEST_DATABASE_URL` | pytest | The test database. See Testing |
 | `TEST_STORAGE_CONNECTION_STRING` | pytest | The test storage, by default `UseDevelopmentStorage=true`. See Testing |
 | `AZURITE_ACCOUNT_KEY` | Docker Compose | Azurite's well-known key, for the `api` service's connection string. Not read by the API itself. See Storage in Docker Compose |
@@ -428,6 +486,15 @@ Tests never call Clerk. `tests/conftest.py` signs tokens with its own key and fa
 def test_example(client, clerk) -> None:
     clerk.add_user("user_1", "pat@example.com")  # a Clerk user and their email
     response = client.get("/me", headers=clerk.headers("user_1"))
+```
+
+Tests never call the AI service either. The `client` fixture brings in `ai_service`, a fake `POST /analyze` that answers with the example squat result, and TestClient runs an upload's background analysis before `client.post` returns. Change its answer, or make it fail, before the upload:
+
+```python
+def test_example(client, clerk, ai_service) -> None:
+    ai_service.status_code = 500  # or: ai_service.body = {...}, ai_service.error = httpx.ConnectError("refused")
+    ...  # upload; the session ends failed with analysis_unavailable
+    assert ai_service.requests[0]["exercise"] == "squat"  # what the job sent
 ```
 
 Every route needs a test that rejects the wrong role and the wrong owner.
