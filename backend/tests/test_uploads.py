@@ -8,6 +8,7 @@ from fastapi import HTTPException, UploadFile
 from starlette.datastructures import Headers
 
 from app import uploads
+from app.schemas.analysis_contract import ERROR_MESSAGES
 
 
 def fake_upload():
@@ -56,7 +57,9 @@ def test_unusable_metadata_is_rejected_and_file_is_rewound(monkeypatch, metadata
     "failure,status",
     [
         (FileNotFoundError(), 503),
-        (subprocess.TimeoutExpired("ffprobe", 15), 422),
+        # Too slow on our side: not the video's fault, so not "record it again".
+        (subprocess.TimeoutExpired("ffprobe", 15), 503),
+        # ffprobe could not read the file: the video is unreadable.
         (subprocess.CalledProcessError(1, "ffprobe", stderr=b"private metadata"), 422),
     ],
 )
@@ -69,3 +72,5 @@ def test_probe_failures_are_safe(monkeypatch, failure, status):
         uploads.validate_video(fake_upload())
     assert error.value.status_code == status
     assert "private metadata" not in str(error.value.detail)
+    if status == 503:
+        assert error.value.detail != ERROR_MESSAGES["video_unreadable"]

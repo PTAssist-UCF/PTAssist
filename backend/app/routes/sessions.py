@@ -53,32 +53,39 @@ def create_session(
     db: Database,
     storage: Annotated[Storage, Depends(get_storage)],
 ) -> SessionResponse:
+    plan_exercise_id = target.id
+    # End the transaction the sign-in and ownership checks opened, so its database
+    # connection goes back to the pool. Checking the video (up to 15 seconds of
+    # ffprobe) and storing it (up to MAX_VIDEO_UPLOAD_BYTES) can take minutes, and a
+    # few slow uploads holding connections that long would use up the pool. The checks
+    # only read, and get_current_user has already committed a new user's row.
+    db.rollback()
     info = validate_video(video)
     session_id = uuid.uuid4()
     key = f"sessions/{session_id}{info.extension}"
-    session = ExerciseSession(
-        id=session_id,
-        plan_exercise_id=target.id,
-        status=SessionStatus.PROCESSING,
-        video_key=key,
-    )
-    upload_started = False
     try:
+        storage.upload(key, video.file, info.content_type)
+        # The session row only once the video is stored, in a short transaction.
+        session = ExerciseSession(
+            id=session_id,
+            plan_exercise_id=plan_exercise_id,
+            status=SessionStatus.PROCESSING,
+            video_key=key,
+        )
         db.add(session)
         db.flush()
         response = SessionResponse.model_validate(session)
-        upload_started = True
-        storage.upload(key, video.file, info.content_type)
         db.commit()
     except (AzureError, SQLAlchemyError, OSError):
         db.rollback()
-        if upload_started:
-            try:
-                storage.delete(key)
-            except (AzureError, OSError):
-                # Only a generated session UUID is logged. Cleanup failure must
-                # not replace the original response or expose a video URL.
-                logger.warning("Upload cleanup failed for session %s", session_id)
+        # No orphan blob: delete the video, even a partly uploaded one. No orphan row
+        # either: the row is committed only after the upload succeeded.
+        try:
+            storage.delete(key)
+        except (AzureError, OSError):
+            # Only a generated session UUID is logged. Cleanup failure must
+            # not replace the original response or expose a video URL.
+            logger.warning("Upload cleanup failed for session %s", session_id)
         raise HTTPException(
             503, "Could not save the video. Please try again."
         ) from None

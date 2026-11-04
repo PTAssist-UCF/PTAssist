@@ -242,20 +242,27 @@ returns `404`, before inspecting media or writing a blob. Filenames are never us
 as storage keys: the API generates a UUID and stores `sessions/<uuid>.<extension>`.
 
 Validation checks the actual uploaded size, not a caller's size claim. The default
-limit is **1 GiB** (`MAX_VIDEO_UPLOAD_BYTES=1073741824`); this allows large two-minute
-phone recordings. Higher-bitrate 4K recordings may exceed it: record at a lower
-resolution or adjust the deployment limit deliberately. FastAPI spools multipart
+limit is **500 MiB** (`MAX_VIDEO_UPLOAD_BYTES=524288000`), which fits two-minute
+1080p phone recordings. 4K recordings may exceed it: record at 1080p, or raise the
+limit deliberately (mind the temporary disk, below). FastAPI spools multipart
 files to temporary disk; this check happens after multipart parsing, not as a
 network/request-body rate or size guard. Infrastructure limits and further upload
-hardening belong to SCRUM-82. Plan temporary disk capacity for the spooled file
-plus a temporary inspection copy; neither copy is kept after the request.
+hardening belong to SCRUM-82. While it checks an upload, the API holds about twice
+its size on temporary disk (the spooled file plus an inspection copy), and Azure
+Container Apps gives a container only about 1-4 GiB of it, depending on its CPU
+size. A higher limit leaves room for fewer uploads at once. Neither copy is kept
+after the request.
 
 `ffprobe` inspects the actual media container and checks for a video stream (audio
-and cover art alone do not count). The inspected type must match the `.mp4`, `.mov`,
-or `.webm` extension. The blob uses a trusted content type derived by the API,
-never the request's arbitrary content type. Inspection has a 15-second timeout,
-permits only local-file protocols and the supported container demuxers, and its
-output is never returned or logged. Videos must be between `MIN_VIDEO_SECONDS`
+and cover art alone do not count). The inspected type must match the extension:
+`.webm` for WebM, and `.mp4` or `.mov` for the MP4/QuickTime family, which phones
+name loosely (for example an ISO MP4 saved as `.mov`). The blob gets the inspected
+container's extension and a trusted content type derived by the API (`video/mp4`,
+`video/quicktime`, or `video/webm`), never the request's arbitrary content type.
+Inspection has a 15-second timeout, permits only local-file protocols and the
+supported container demuxers, and its output is never returned or logged. A
+timeout answers `503`, not `422`: it means the API was too slow, not that the video
+is bad, so the patient is not asked to record again. Videos must be between `MIN_VIDEO_SECONDS`
 and `MAX_VIDEO_SECONDS` from `app/schemas/analysis_contract.py`, currently 3-120
 seconds, inclusive. The container duration is checked too, so a long audio track
 cannot extend a clip past the maximum. This is media metadata validation, not full
@@ -270,11 +277,16 @@ decoding or pose analysis; the AI service retains its own input checks.
 | `413` | File exceeds `MAX_VIDEO_UPLOAD_BYTES` |
 | `415` | Unsupported declared type/extension or inspected format mismatch |
 | `422` | Invalid form, empty/unreadable media, no video, or duration outside the shared limits |
-| `503` | Inspection tool unavailable, or upload/database write failed |
+| `503` | Inspection tool unavailable or timed out, or upload/database write failed |
 
-Rejected videos do not create a session or call `storage.upload`. If uploading or
-committing the session fails, the transaction is rolled back and blob deletion is
-attempted, including for a partially uploaded blob. Cleanup failure is logged using
+Rejected videos do not create a session or call `storage.upload`. The route holds no
+database connection while it checks and stores the video, which can take minutes: it
+ends the transaction of the sign-in and ownership checks first (otherwise a few slow
+uploads would use up the connection pool), uploads the blob, and only then inserts
+and commits the session in a short transaction. If uploading or committing the
+session fails, the transaction is rolled back and blob deletion is attempted,
+including for a partially uploaded blob, so no blob is left without a session and no
+session without its video. Cleanup failure is logged using
 only the generated session UUID. Since PostgreSQL and blob storage do not share a
 transaction, an outage during compensating deletion can leave an orphan blob for
 later cleanup. The existing storage dependency still reports missing/broken storage
@@ -297,8 +309,11 @@ and progress are handled separately in SCRUM-64.
 **Analysis does not start in this task.** New sessions remain `processing` until
 SCRUM-45 adds the background handoff. That task should read `session.video_key`
 and request a temporary read URL through `app/storage/`. Migration `e846d97b14af`
-adds the unique, nullable key: old rows have `NULL`, and every new upload sets it.
-Old rows without a key cannot be analyzed and need explicit handling in SCRUM-45.
+adds the unique key, and `163e3f3a47c4` makes it required (`NOT NULL`), so every
+session has a stored video. No session can lack a key (the upload route is the only
+code that creates sessions), so that migration neither fills in nor deletes rows: if
+one without a key exists anyway, it stops with "contains null values" and changes
+nothing, rather than deleting the session and its result.
 
 **Frontend handoff:** router tag `sessions`; operation IDs `create_session` and
 `get_session`. The API describes the upload form and `SessionResponse` in
@@ -310,7 +325,8 @@ exercise UUID, choose a video, and execute. Use the returned `id` in the GET rou
 `tests/test_sessions.py` generates tiny synthetic videos in pytest's temporary
 directory with ffmpeg (no recordings are committed). It exercises real ffprobe,
 Postgres, and Azurite for uploads, permission checks, duration boundaries, private
-retrieval, and rollback cleanup. `tests/test_uploads.py` covers inspection errors.
+retrieval, rollback cleanup, and that no database connection is held while a video
+is checked and stored. `tests/test_uploads.py` covers inspection errors.
 
 ## Storage
 
@@ -358,7 +374,7 @@ Read from environment variables (see `/.env.example`): database URL, Clerk setti
 | `CLERK_AUTHORIZED_PARTIES` | API | Web app origins, comma-separated. Tokens must come from one of them, and browsers may call the API only from them (CORS). Empty skips the token's origin check and blocks every browser, so set it everywhere |
 | `STORAGE_CONNECTION_STRING` | API | Storage account to use. `UseDevelopmentStorage=true` locally (Azurite on `127.0.0.1:10000`). In Azure, the storage account's connection string: it holds the account key, so it is a secret. See Storage |
 | `STORAGE_CONTAINER` | API | Private blob container for videos. Default `videos`. Created if missing |
-| `MAX_VIDEO_UPLOAD_BYTES` | API, Docker Compose | Maximum uploaded video size in bytes; positive integer, default 1073741824 (1 GiB). Independent of the shared duration limits |
+| `MAX_VIDEO_UPLOAD_BYTES` | API, Docker Compose | Maximum uploaded video size in bytes; positive integer, default 524288000 (500 MiB). The API needs about twice this in temporary disk space per upload being checked. Independent of the shared duration limits |
 | `TEST_DATABASE_URL` | pytest | The test database. See Testing |
 | `TEST_STORAGE_CONNECTION_STRING` | pytest | The test storage, by default `UseDevelopmentStorage=true`. See Testing |
 | `AZURITE_ACCOUNT_KEY` | Docker Compose | Azurite's well-known key, for the `api` service's connection string. Not read by the API itself. See Storage in Docker Compose |

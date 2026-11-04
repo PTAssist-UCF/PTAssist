@@ -13,6 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app import uploads
+from app.db import engine
 from app.models import (
     Exercise,
     ExerciseSession,
@@ -209,9 +210,68 @@ def test_wrong_type_or_unreadable_file_is_rejected(
     assert sessions_count(db) == 0
 
 
-def test_real_container_must_match_extension(client, clerk, assignment, db, make_video):
-    response = post_video(client, clerk, assignment, make_video(".webm"))
+@pytest.mark.parametrize(
+    "content,filename",
+    [
+        (".webm", "exercise.mp4"),
+        (".webm", "exercise.mov"),
+        (".mp4", "exercise.webm"),
+        (".mov", "exercise.webm"),
+    ],
+)
+def test_real_container_must_match_extension(
+    client, clerk, assignment, db, make_video, content, filename
+):
+    response = post_video(client, clerk, assignment, make_video(content), filename)
     assert response.status_code == 415
+    assert sessions_count(db) == 0
+
+
+@pytest.mark.parametrize(
+    "content,filename,mime,stored_type",
+    [
+        # Some phones save an ISO MP4 with a .mov name.
+        (".mp4", "exercise.mov", "video/quicktime", "video/mp4"),
+        (".mov", "exercise.mp4", "video/mp4", "video/quicktime"),
+    ],
+)
+def test_mp4_and_mov_names_are_interchangeable_and_stored_as_inspected(
+    client,
+    clerk,
+    assignment,
+    db,
+    storage,
+    make_video,
+    content,
+    filename,
+    mime,
+    stored_type,
+):
+    contents = make_video(content)
+    response = post_video(client, clerk, assignment, contents, filename, mime)
+    assert response.status_code == 201, response.text
+    saved = db.get(ExerciseSession, uuid.UUID(response.json()["id"]))
+    assert saved.video_key == f"sessions/{saved.id}{content}"
+    stored = httpx.get(storage.read_url(saved.video_key))
+    assert stored.content == contents
+    assert stored.headers["content-type"] == stored_type
+
+
+def test_inspection_timeout_is_a_server_error_not_a_bad_video(
+    client, clerk, assignment, db, storage, make_video, monkeypatch
+):
+    contents = make_video()  # before subprocess.run is replaced below
+
+    def too_slow(*args, **kwargs):
+        raise subprocess.TimeoutExpired("ffprobe", uploads.PROBE_TIMEOUT_SECONDS)
+
+    monkeypatch.setattr(uploads.subprocess, "run", too_slow)
+    monkeypatch.setattr(
+        storage, "upload", lambda *args: pytest.fail("No upload expected")
+    )
+    response = post_video(client, clerk, assignment, contents)
+    assert response.status_code == 503
+    assert response.json()["detail"] != ERROR_MESSAGES["video_unreadable"]
     assert sessions_count(db) == 0
 
 
@@ -347,6 +407,38 @@ def test_failed_commit_removes_the_uploaded_file(
     assert sessions_count(db) == 0
     assert len(keys) == 1
     assert httpx.get(storage.read_url(keys[0])).status_code == 404
+
+
+def test_no_database_connection_is_held_while_checking_and_storing_the_video(
+    client, clerk, assignment, db, storage, make_video, monkeypatch
+):
+    """Inspection and a large upload can take minutes. Holding a pooled connection
+    meanwhile would let a few slow uploads use up the pool."""
+    contents = make_video()
+    plan_exercise_id = str(assignment.id)
+    db.rollback()  # this test's own session gives its connection back too
+    original_upload = storage.upload
+    in_use = []
+
+    def check(video):
+        in_use.append(engine.pool.checkedout())
+        return uploads.validate_video(video)
+
+    def upload(key, data, content_type):
+        in_use.append(engine.pool.checkedout())
+        original_upload(key, data, content_type)
+
+    monkeypatch.setattr("app.routes.sessions.validate_video", check)
+    monkeypatch.setattr(storage, "upload", upload)
+    response = client.post(
+        "/sessions",
+        data={"plan_exercise_id": plan_exercise_id},
+        files={"video": ("exercise.mp4", contents, "video/mp4")},
+        headers=clerk.headers("user_p"),
+    )
+    assert response.status_code == 201, response.text
+    assert in_use == [0, 0]
+    assert sessions_count(db) == 1
 
 
 def test_filename_and_video_details_are_not_logged(

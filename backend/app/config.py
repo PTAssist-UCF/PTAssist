@@ -24,8 +24,10 @@ STORAGE_CONNECTION_STRING = os.environ.get("STORAGE_CONNECTION_STRING", "")
 # The private blob container for videos. The API creates it if it is missing.
 STORAGE_CONTAINER = os.environ.get("STORAGE_CONTAINER") or "videos"
 
-# 1 GiB leaves room for large two-minute phone recordings. Duration is still capped
+# 500 MiB fits two-minute 1080p phone recordings. While an upload is checked, the API
+# holds it on temporary disk twice (the received file and an inspection copy), and
+# Azure Container Apps gives a container only a few GiB of it. Duration is still capped
 # by the shared analysis contract, independent of this byte limit.
-MAX_VIDEO_UPLOAD_BYTES = int(os.environ.get("MAX_VIDEO_UPLOAD_BYTES", 1024**3))
+MAX_VIDEO_UPLOAD_BYTES = int(os.environ.get("MAX_VIDEO_UPLOAD_BYTES", 500 * 1024**2))
 if MAX_VIDEO_UPLOAD_BYTES <= 0:
     raise ValueError("MAX_VIDEO_UPLOAD_BYTES must be positive")
