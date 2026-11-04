@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRoute
 
 from app.config import CLERK_AUTHORIZED_PARTIES, CLERK_SECRET_KEY
-from app.routes import health, me
+from app.routes import health, me, sessions
 
 logger = logging.getLogger(__name__)
 
@@ -49,3 +49,4 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(me.router)
+app.include_router(sessions.router)

@@ -28,6 +28,11 @@ Dockerfile   API image, also used to run migrations
 
 ## Run locally
 
+Video uploads also need `ffprobe` on `PATH` (installed by the ffmpeg package). The
+API Docker image includes it. If running Python outside Docker, install ffmpeg
+from its official distribution and check `ffprobe -version`. The API can start
+without it, but video validation then returns `503`.
+
 Needs Python 3.12, plus Postgres and Azurite for storage. The simplest way to get both is Docker Compose: run `docker compose up -d db azurite` from the repo root (see the root README, Getting started). `DATABASE_URL` and `STORAGE_CONNECTION_STRING` in `/.env.example` already point at them. Then run these from `backend/`:
 
 ```bash
@@ -222,6 +227,91 @@ Each route's function name becomes its operation id in the API description (`/op
 | Sessions | `POST /sessions`, `GET /sessions/{id}`, `GET /sessions` | Patient (therapist can read linked patients') |
 | Progress | `GET /patients/{id}/progress` | Therapist |
 
+## Video upload and session status (SCRUM-44)
+
+`POST /sessions` accepts a `multipart/form-data` request with two required fields:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `plan_exercise_id` | UUID text | An assigned exercise whose plan belongs to the signed-in patient |
+| `video` | File | One MP4, MOV, or WebM recording (one set) |
+
+Send the Clerk token in `Authorization: Bearer <token>`. The route accepts patients
+only (`403` for therapists). A missing assignment or another patient's assignment
+returns `404`, before inspecting media or writing a blob. Filenames are never used
+as storage keys: the API generates a UUID and stores `sessions/<uuid>.<extension>`.
+
+Validation checks the actual uploaded size, not a caller's size claim. The default
+limit is **1 GiB** (`MAX_VIDEO_UPLOAD_BYTES=1073741824`); this allows large two-minute
+phone recordings. Higher-bitrate 4K recordings may exceed it: record at a lower
+resolution or adjust the deployment limit deliberately. FastAPI spools multipart
+files to temporary disk; this check happens after multipart parsing, not as a
+network/request-body rate or size guard. Infrastructure limits and further upload
+hardening belong to SCRUM-82. Plan temporary disk capacity for the spooled file
+plus a temporary inspection copy; neither copy is kept after the request.
+
+`ffprobe` inspects the actual media container and checks for a video stream (audio
+and cover art alone do not count). The inspected type must match the `.mp4`, `.mov`,
+or `.webm` extension. The blob uses a trusted content type derived by the API,
+never the request's arbitrary content type. Inspection has a 15-second timeout,
+permits only local-file protocols and the supported container demuxers, and its
+output is never returned or logged. Videos must be between `MIN_VIDEO_SECONDS`
+and `MAX_VIDEO_SECONDS` from `app/schemas/analysis_contract.py`, currently 3-120
+seconds, inclusive. The container duration is checked too, so a long audio track
+cannot extend a clip past the maximum. This is media metadata validation, not full
+decoding or pose analysis; the AI service retains its own input checks.
+
+| Response | Meaning |
+| --- | --- |
+| `201` | Private blob saved and session committed as `processing` |
+| `401` | Missing or invalid Clerk token |
+| `403` | The signed-in user cannot upload in their role |
+| `404` | Assignment is missing or not owned by this patient |
+| `413` | File exceeds `MAX_VIDEO_UPLOAD_BYTES` |
+| `415` | Unsupported declared type/extension or inspected format mismatch |
+| `422` | Invalid form, empty/unreadable media, no video, or duration outside the shared limits |
+| `503` | Inspection tool unavailable, or upload/database write failed |
+
+Rejected videos do not create a session or call `storage.upload`. If uploading or
+committing the session fails, the transaction is rolled back and blob deletion is
+attempted, including for a partially uploaded blob. Cleanup failure is logged using
+only the generated session UUID. Since PostgreSQL and blob storage do not share a
+transaction, an outage during compensating deletion can leave an orphan blob for
+later cleanup. The existing storage dependency still reports missing/broken storage
+configuration as described under Storage and Config.
+
+Both the `201` acknowledgement and `GET /sessions/{session_id}` return:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | UUID | Session identifier used for polling |
+| `plan_exercise_id` | UUID | Assigned exercise for this recording |
+| `status` | `processing`, `complete`, or `failed` | Current saved state |
+| `created_at` | Time with timezone | When the session was created |
+
+Status is visible to the owning patient and therapists currently linked to that
+patient. Other patients, unlinked therapists, and unknown IDs receive `404`.
+The response never exposes a private storage key or a signed video URL. Results
+and progress are handled separately in SCRUM-64.
+
+**Analysis does not start in this task.** New sessions remain `processing` until
+SCRUM-45 adds the background handoff. That task should read `session.video_key`
+and request a temporary read URL through `app/storage/`. Migration `e846d97b14af`
+adds the unique, nullable key: old rows have `NULL`, and every new upload sets it.
+Old rows without a key cannot be analyzed and need explicit handling in SCRUM-45.
+
+**Frontend handoff:** router tag `sessions`; operation IDs `create_session` and
+`get_session`. The API describes the upload form and `SessionResponse` in
+`/openapi.json`. The frontend team must regenerate Orval hooks from the running
+API (`npm run generate:api`); generated frontend files were deliberately left for
+that team. In `/docs`, authorize, select `POST /sessions`, enter an owned plan
+exercise UUID, choose a video, and execute. Use the returned `id` in the GET route.
+
+`tests/test_sessions.py` generates tiny synthetic videos in pytest's temporary
+directory with ffmpeg (no recordings are committed). It exercises real ffprobe,
+Postgres, and Azurite for uploads, permission checks, duration boundaries, private
+retrieval, and rollback cleanup. `tests/test_uploads.py` covers inspection errors.
+
 ## Storage
 
 `app/storage/blob.py` is the only code that talks to storage. It uses the Azure Blob SDK against Azurite (Microsoft's Azure Storage emulator) locally and our Azure storage account in the cloud. There is one code path: only `STORAGE_CONNECTION_STRING` changes. Routes get it with the `get_storage` dependency, which tests can swap:
@@ -268,6 +358,7 @@ Read from environment variables (see `/.env.example`): database URL, Clerk setti
 | `CLERK_AUTHORIZED_PARTIES` | API | Web app origins, comma-separated. Tokens must come from one of them, and browsers may call the API only from them (CORS). Empty skips the token's origin check and blocks every browser, so set it everywhere |
 | `STORAGE_CONNECTION_STRING` | API | Storage account to use. `UseDevelopmentStorage=true` locally (Azurite on `127.0.0.1:10000`). In Azure, the storage account's connection string: it holds the account key, so it is a secret. See Storage |
 | `STORAGE_CONTAINER` | API | Private blob container for videos. Default `videos`. Created if missing |
+| `MAX_VIDEO_UPLOAD_BYTES` | API, Docker Compose | Maximum uploaded video size in bytes; positive integer, default 1073741824 (1 GiB). Independent of the shared duration limits |
 | `TEST_DATABASE_URL` | pytest | The test database. See Testing |
 | `TEST_STORAGE_CONNECTION_STRING` | pytest | The test storage, by default `UseDevelopmentStorage=true`. See Testing |
 | `AZURITE_ACCOUNT_KEY` | Docker Compose | Azurite's well-known key, for the `api` service's connection string. Not read by the API itself. See Storage in Docker Compose |
@@ -340,7 +431,8 @@ The workflow uses read-only repository permissions and needs no repository secre
 job runs two service containers, the same setup as the local tests: `postgres:17` on
 port 5433, with `TEST_DATABASE_URL` pointing at it, and
 `mcr.microsoft.com/azure-storage/azurite:3.37.0` on port 10000, with
-`TEST_STORAGE_CONNECTION_STRING` set to `UseDevelopmentStorage=true`. The Azurite
+`TEST_STORAGE_CONNECTION_STRING` set to `UseDevelopmentStorage=true`. The job installs
+ffmpeg for synthetic upload fixtures and real ffprobe inspection. The Azurite
 image has no health check, so a step waits until it answers before pytest starts.
 The same workflow also runs the AI service's checks (`AI lint`, `AI tests`, and
 `AI image build`), described in `ai/README.md`, and the web app's checks
