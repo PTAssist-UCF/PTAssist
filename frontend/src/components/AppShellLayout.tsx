@@ -21,14 +21,20 @@ import { ApiError } from '@/apiClient';
 /**
  * App shell layout with role-specific navigation, responsive header/navbar,
  * user status, and error handling.
+ *
+ * The role-specific parts (badge and navigation) only show once GET /me has given the
+ * role. The URL is not used to guess it, so a patient who opens a /therapist link never
+ * sees therapist navigation, not even briefly.
  */
 export default function AppShellLayout({ children }: { children?: ReactNode }) {
   const [opened, { toggle, close }] = useDisclosure();
   const location = useLocation();
-  const { data: me, isLoading, error } = useGetMe();
+  const { data: me, error } = useGetMe();
 
-  const isTherapistRoute = location.pathname.startsWith('/therapist');
-  const role = me?.role ?? (isTherapistRoute ? 'therapist' : 'patient');
+  const role = me?.role;
+  // Skeletons until the role is known; if /me fails, a neutral shell (no role-specific
+  // parts) next to the error text in the header.
+  const isLoadingRole = !role && !error;
 
   return (
     <AppShell
@@ -60,22 +66,23 @@ export default function AppShellLayout({ children }: { children?: ReactNode }) {
             >
               PTAssist
             </Text>
-            {isLoading ? (
+            {isLoadingRole ? (
               <Skeleton height={20} width={70} radius="xl" />
             ) : role === 'therapist' ? (
               <Badge color="blue" variant="light" size="sm">
                 Therapist
               </Badge>
-            ) : (
+            ) : role === 'patient' ? (
               <Badge color="teal" variant="light" size="sm">
                 Patient
               </Badge>
-            )}
+            ) : null}
           </Group>
 
           <Group gap="sm">
             {me && (
-              <Text size="sm" c="dimmed">
+              // Hidden on phones, where it would push Sign out off the header.
+              <Text size="sm" c="dimmed" visibleFrom="sm">
                 Signed in as {me.email}
               </Text>
             )}
@@ -95,7 +102,7 @@ export default function AppShellLayout({ children }: { children?: ReactNode }) {
 
       <AppShell.Navbar p="md">
         <AppShell.Section grow component={ScrollArea}>
-          {isLoading ? (
+          {isLoadingRole ? (
             <Box py="xs">
               <Skeleton height={18} width={120} mb="md" />
               <Skeleton height={36} radius="sm" mb="sm" />
@@ -132,7 +139,7 @@ export default function AppShellLayout({ children }: { children?: ReactNode }) {
                 onClick={close}
               />
             </Box>
-          ) : (
+          ) : role === 'patient' ? (
             <Box>
               <Text size="xs" fw={700} c="dimmed" tt="uppercase" mb="xs">
                 Patient Portal
@@ -162,6 +169,10 @@ export default function AppShellLayout({ children }: { children?: ReactNode }) {
                 onClick={close}
               />
             </Box>
+          ) : (
+            <Text size="sm" c="dimmed">
+              Navigation is unavailable until your account loads.
+            </Text>
           )}
         </AppShell.Section>
       </AppShell.Navbar>

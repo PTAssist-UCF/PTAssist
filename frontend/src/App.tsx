@@ -12,6 +12,7 @@ import PatientPage from './pages/patient/PatientPage';
 import TherapistPage from './pages/therapist/TherapistPage';
 import RoleRedirect from '@/components/RoleRedirect';
 import RoleRoute from '@/components/RoleRoute';
+import ComingSoon from '@/components/ComingSoon';
 
 export default function App() {
   // Without a publishable key (pk_test_...), Clerk never loads and every page would show a
@@ -45,7 +46,7 @@ export default function App() {
                 path="/patient/upload"
                 element={
                   <RoleRoute role="patient">
-                    <PatientPage />
+                    <ComingSoon title="Upload Video" />
                   </RoleRoute>
                 }
               />
@@ -53,7 +54,7 @@ export default function App() {
                 path="/patient/history"
                 element={
                   <RoleRoute role="patient">
-                    <PatientPage />
+                    <ComingSoon title="Results & History" />
                   </RoleRoute>
                 }
               />
@@ -69,7 +70,7 @@ export default function App() {
                 path="/therapist/plans"
                 element={
                   <RoleRoute role="therapist">
-                    <TherapistPage />
+                    <ComingSoon title="Plan Builder" />
                   </RoleRoute>
                 }
               />
@@ -77,7 +78,7 @@ export default function App() {
                 path="/therapist/progress"
                 element={
                   <RoleRoute role="therapist">
-                    <TherapistPage />
+                    <ComingSoon title="Progress & Analytics" />
                   </RoleRoute>
                 }
               />

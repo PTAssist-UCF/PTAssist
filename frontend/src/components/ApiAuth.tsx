@@ -1,7 +1,6 @@
 import { useEffect, type ReactNode } from 'react';
 import { useAuth } from '@clerk/react';
 import { useQueryClient } from '@tanstack/react-query';
-import { useLocation, useNavigate } from 'react-router-dom';
 
 import { setTokenGetter, setUnauthorizedHandler } from '@/apiClient';
 
@@ -13,16 +12,18 @@ import { setTokenGetter, setUnauthorizedHandler } from '@/apiClient';
  *   to sign in on this browser never sees the previous user's data. This covers every
  *   way of being signed out: the Sign out button, an expired session, or signing out in
  *   another tab.
- * - When any API request returns 401 (expired session), the cache is cleared and the
- *   user is redirected to /sign-in with redirect_url.
+ * - When any API request returns 401, the cache is cleared and the user is signed out of
+ *   Clerk, then sent to /sign-in with redirect_url pointing back to the current page.
+ *   Signing out matters: a 401 while Clerk still says "signed in" means the API rejected
+ *   a token Clerk thinks is valid (mismatched keys, clock drift, revoked session). Clerk's
+ *   sign-in page sends a signed-in user straight back to redirect_url, so without the
+ *   sign-out the app would loop between that page and /sign-in.
  *
  * Render it inside ClerkProvider and QueryClientProvider, around the routes (App.tsx).
  */
 export default function ApiAuth({ children }: { children: ReactNode }) {
-  const { getToken, isLoaded, isSignedIn } = useAuth();
+  const { getToken, isLoaded, isSignedIn, signOut } = useAuth();
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
-  const location = useLocation();
 
   // Set while rendering, not in a useEffect, so the token getter is in place before any
   // page below sends its first request (a parent's effects run after its children's).
@@ -33,13 +34,15 @@ export default function ApiAuth({ children }: { children: ReactNode }) {
   useEffect(() => {
     setUnauthorizedHandler(() => {
       queryClient.clear();
-      const here = location.pathname + location.search + location.hash;
-      navigate(`/sign-in?redirect_url=${encodeURIComponent(here)}`, { replace: true });
+      // Read the address when the 401 happens, so the handler needn't be registered
+      // again on every page change.
+      const here = window.location.pathname + window.location.search + window.location.hash;
+      void signOut({ redirectUrl: `/sign-in?redirect_url=${encodeURIComponent(here)}` });
     });
     return () => {
       setUnauthorizedHandler(() => {});
     };
-  }, [navigate, location, queryClient]);
+  }, [signOut, queryClient]);
 
   useEffect(() => {
     // When this runs, the signed-in pages are already gone from the screen
