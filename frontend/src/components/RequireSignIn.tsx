@@ -2,15 +2,15 @@ import { Center } from '@mantine/core';
 import { useAuth } from '@clerk/react';
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
 
-import AccountBar from '@/components/AccountBar';
 import AuthLoading from '@/components/AuthLoading';
+import AppShellLayout from '@/components/AppShellLayout';
 
 /**
  * A layout route for the pages that need a signed-in user (see App.tsx).
  *
  * - While Clerk loads, it shows a spinner (or an error if Clerk can't load).
  * - A signed-out visitor goes to /sign-in, and comes back to this page after signing in.
- * - A signed-in user sees the page, with the account bar above it.
+ * - A signed-in user sees the page, wrapped in the role-specific AppShell.
  *
  * This only keeps the screens tidy. The API checks the token on every request.
  */
@@ -36,9 +36,8 @@ export default function RequireSignIn() {
   }
 
   return (
-    <>
-      <AccountBar />
+    <AppShellLayout>
       <Outlet />
-    </>
+    </AppShellLayout>
   );
 }

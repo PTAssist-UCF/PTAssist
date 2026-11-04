@@ -1,16 +1,4 @@
-import {
-  Container,
-  Title,
-  Text,
-  Button,
-  Group,
-  Stack,
-  Paper,
-  Table,
-  Badge,
-  Box,
-} from '@mantine/core';
-import { Link } from 'react-router-dom';
+import { Container, Title, Text, Button, Group, Stack, Paper, Table, Badge } from '@mantine/core';
 
 const mockPatients = [
   { id: '1', name: 'Alex Johnson', plan: 'Post-Op Knee Rehab', sessions: 12, compliance: '92%' },
@@ -20,27 +8,7 @@ const mockPatients = [
 
 export default function TherapistPage() {
   return (
-    <Container size="lg" py="xl">
-      <Group justify="space-between" mb="xl">
-        <Box>
-          <Title order={1} c="teal.8">
-            PTAssist
-          </Title>
-          <Text c="dimmed" size="sm">
-            Therapist Dashboard
-          </Text>
-        </Box>
-        <Group>
-          <Button variant="filled" color="teal" size="sm">
-            + Link New Patient
-          </Button>
-          {/* TODO: SCRUM-34 - replace placeholder button with role routing */}
-          <Button component={Link} to="/patient" variant="light" color="teal" size="sm">
-            Switch to Patient View
-          </Button>
-        </Group>
-      </Group>
-
+    <Container size="lg" py="md">
       <Stack gap="lg">
         <Paper withBorder p="lg" radius="md">
           <Group justify="space-between" mb="md">
@@ -52,6 +20,9 @@ export default function TherapistPage() {
                 Monitor home exercise completion and form analysis results.
               </Text>
             </div>
+            <Button variant="filled" color="teal" size="sm">
+              + Link New Patient
+            </Button>
           </Group>
 
           <Table highlightOnHover>

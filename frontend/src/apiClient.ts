@@ -38,6 +38,15 @@ type TokenGetter = () => Promise<string | null>;
 // without a token.
 let getToken: TokenGetter = async () => null;
 
+/** Called whenever an API request answers 401 (e.g. expired session). */
+type UnauthorizedHandler = () => void;
+let unauthorizedHandler: UnauthorizedHandler = () => {};
+
+/** Tells apiFetch what to do on a 401 answer (e.g. redirect to sign-in). */
+export function setUnauthorizedHandler(handler: UnauthorizedHandler): void {
+  unauthorizedHandler = handler;
+}
+
 /**
  * Tells apiFetch how to get the signed-in user's token. src/components/ApiAuth.tsx calls
  * this with Clerk's getToken, from Clerk's useAuth() hook. It must run before any hook
@@ -63,6 +72,9 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   const response = await fetch(`${API_URL}${path}`, { ...options, headers });
   const body = await readBody(response);
   if (!response.ok) {
+    if (response.status === 401) {
+      unauthorizedHandler();
+    }
     throw new ApiError(response.status, body);
   }
   return body as T;
