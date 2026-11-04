@@ -23,3 +23,9 @@ CLERK_AUTHORIZED_PARTIES = [
 STORAGE_CONNECTION_STRING = os.environ.get("STORAGE_CONNECTION_STRING", "")
 # The private blob container for videos. The API creates it if it is missing.
 STORAGE_CONTAINER = os.environ.get("STORAGE_CONTAINER") or "videos"
+
+# 1 GiB leaves room for large two-minute phone recordings. Duration is still capped
+# by the shared analysis contract, independent of this byte limit.
+MAX_VIDEO_UPLOAD_BYTES = int(os.environ.get("MAX_VIDEO_UPLOAD_BYTES", 1024**3))
+if MAX_VIDEO_UPLOAD_BYTES <= 0:
+    raise ValueError("MAX_VIDEO_UPLOAD_BYTES must be positive")
