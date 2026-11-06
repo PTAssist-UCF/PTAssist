@@ -132,8 +132,14 @@ def test_a_patient_can_have_several_therapists(client, clerk, db, users) -> None
 
 @pytest.mark.parametrize(
     "body",
-    [{}, {"email": ""}, {"email": "   "}, {"email": "a" * 321}],
-    ids=["no email", "empty", "only spaces", "too long"],
+    [
+        {},
+        {"email": ""},
+        {"email": "   "},
+        {"email": "a" * 321},
+        {"email": "pat\u0000@example.com"},
+    ],
+    ids=["no email", "empty", "only spaces", "too long", "NUL character"],
 )
 def test_bad_email_gets_422(client, clerk, db, users, body) -> None:
     response = client.post(
@@ -180,7 +186,11 @@ def test_unlinking_removes_only_the_link(client, clerk, db, users) -> None:
     squat = db.scalars(select(Exercise).where(Exercise.name == "squat")).one()
     plan = Plan(therapist_id=users["ther"].id, patient_id=users["pat"].id)
     target = PlanExercise(plan=plan, exercise=squat, reps=10, sets=3, times_per_week=3)
-    session = ExerciseSession(plan_exercise=target, status=SessionStatus.COMPLETE)
+    session = ExerciseSession(
+        plan_exercise=target,
+        status=SessionStatus.COMPLETE,
+        video_key=f"sessions/{uuid.uuid4()}.mp4",
+    )
     db.add(session)
     db.commit()
     therapist, patient = clerk.headers("user_ther"), clerk.headers("user_pat")

@@ -253,7 +253,7 @@ A linked patient is `{"id", "email", "linked_at"}`: the patient's user id (the `
 | `403` | The caller is not a therapist |
 | `404` | Link: no patient uses that email. Unlink: the caller is not linked to that patient |
 | `409` | Link: already linked, or more than one patient uses that email |
-| `422` | Link: the email is missing, blank, or longer than 320 characters |
+| `422` | Link: the email is missing, blank, longer than 320 characters, or contains a NUL character |
 
 **Frontend handoff:** router tag `patients`; operation ids `link_patient`, `list_linked_patients`, and `unlink_patient`. Regenerate the hooks from the running API (`npm run generate:api`); the generated frontend files are left to the frontend team. To try the endpoints in `/docs`, promote your local account to therapist first (see Clerk settings). `tests/test_therapist_patients.py` covers each endpoint, including the wrong role and the wrong owner.
 
