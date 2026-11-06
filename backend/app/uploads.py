@@ -18,6 +18,10 @@ from app.schemas.analysis_contract import (
 )
 
 VIDEO_TYPES = {".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm"}
+# MP4 and QuickTime (MOV) are one container family, and phones name them loosely: a
+# ".mov" file can hold an ISO MP4, and the other way round. Either name is accepted for
+# either one; the blob gets the type of the inspected container. WebM is separate.
+MOV_FAMILY = {".mp4", ".mov"}
 PROBE_TIMEOUT_SECONDS = 15
 
 
@@ -83,7 +87,9 @@ def validate_video(video: UploadFile) -> VideoInfo:
             actual = VideoInfo(".mov", "video/quicktime")
         else:
             actual = VideoInfo(".mp4", "video/mp4")
-        if actual.extension != extension:
+        if actual.extension != extension and not (
+            actual.extension in MOV_FAMILY and extension in MOV_FAMILY
+        ):
             raise HTTPException(
                 415, "The video format does not match its file extension"
             )
@@ -129,6 +135,12 @@ def _probe(path: Path) -> dict:
         return json.loads(result.stdout)
     except FileNotFoundError:
         raise HTTPException(503, "Video validation is not configured") from None
+    except subprocess.TimeoutExpired:
+        # Our side was too slow (for example a busy server), which says nothing about
+        # the video, so don't ask the patient to record it again.
+        raise HTTPException(
+            503, "Checking the video took too long. Please try again."
+        ) from None
     except (subprocess.SubprocessError, ValueError):
         # ffprobe errors can contain filenames or media metadata: never return or
         # log its output. All child processes have a bounded execution time.
