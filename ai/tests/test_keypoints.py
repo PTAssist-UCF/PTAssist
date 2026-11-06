@@ -67,7 +67,7 @@ def test_normalization_failure_logs_the_reason_without_the_video_path(
     assert "<input>: Invalid data found when processing input" in caplog.text
     assert "patient-name" not in caplog.text
     # Bytes the locale cannot decode must not crash the failure report.
-    assert decoding == ["replace"]
+    assert decoding[0] == "replace"
 
 
 def test_redaction_leaves_words_that_match_a_short_file_name() -> None:
@@ -84,6 +84,25 @@ def test_redaction_covers_the_ffmpeg_7_input_file_line() -> None:
     line = video._last_error_line(f"Error opening input file {source}.\n", source)
     assert line == "Error opening input file <input>."
     assert video._last_error_line("", source) == "no details"
+
+
+def test_a_failure_on_a_readable_video_is_not_a_video_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def ffmpeg(command: list[str], **kwargs: object) -> SimpleNamespace:
+        checking_input = "null" in command
+        return SimpleNamespace(returncode=0 if checking_input else 1, stderr="")
+
+    monkeypatch.setattr(video.subprocess, "run", ffmpeg)
+    with pytest.raises(video.NormalizeError, match="readable"):
+        video.normalize(Path("clip.mov"), Path("normalized.mp4"))
+
+
+def test_input_check_decodes_one_frame_and_writes_nothing() -> None:
+    args = video.input_check_command(Path("in.mov"))
+    assert args[args.index("-i") + 1] == "in.mov"
+    assert args[args.index("-frames:v") + 1] == "1"
+    assert args[-3:] == ["-f", "null", "-"]
 
 
 def test_normalization_timeout_is_not_a_video_error(

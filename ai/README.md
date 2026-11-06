@@ -86,14 +86,15 @@ video -> normalize (ffmpeg) -> keypoints (MediaPipe) -> analysis (rules per exer
 
 ### Keypoint module (SCRUM-49)
 
-`app.keypoints.extract.extract_keypoints(video, model)` returns the documented keypoint data in memory. It loads the model, normalizes phone video with ffmpeg, applies rotation metadata, decodes the normalized frames with OpenCV, and runs MediaPipe. Passing `overlay_path` additionally writes a debug overlay. Temporary video files are deleted when the call ends. `POST /analyze` does not call it yet; that integration belongs to SCRUM-52. The command-line tool uses the same function and saves its return value as JSON.
+`app.keypoints.extract.extract_keypoints(video, model)` returns the documented keypoint data in memory. It loads the model, normalizes phone video with ffmpeg, applies rotation metadata, decodes the normalized frames with OpenCV, and runs MediaPipe. Passing `overlay_path` additionally writes a debug overlay. Temporary video files are deleted when the call ends. `POST /analyze` and the command-line tool both use it; the tool saves its return value as JSON.
 
 Errors (all in `app/keypoints/video.py`):
 
 | Error | When | For the caller |
 | --- | --- | --- |
 | `VideoError` | ffmpeg cannot decode the video, or it has no frames | The video is the problem: `video_unreadable` may ask the patient to record again |
-| `VideoTimeoutError` | ffmpeg runs longer than 5 minutes | Not a `VideoError`: the video may be fine and the server slow, so never `video_unreadable` |
+| `VideoTimeoutError` | ffmpeg runs longer than 2 minutes | Not a `VideoError`: the video may be fine and the server slow, so never `video_unreadable` |
+| `NormalizeError` | ffmpeg failed but can decode the video's first frame, for example on a full disk | The problem is on our side, so never `video_unreadable` |
 | `OverlayError` | ffmpeg cannot write the debug overlay (command-line tool only) | Our output failed, not the video |
 
 Anything else, such as a missing model file, is a bug or setup problem on our side. When ffmpeg fails, its last error line is logged with the input path replaced by `<input>`.
@@ -261,7 +262,7 @@ def knee_measurement(landmarks, timestamp_seconds, width, height):
 An analyzer must abstain from rep and form decisions when this returns `None`.
 Synthetic tests in `tests/test_geometry.py`, `tests/test_smoothing.py`, and
 `tests/test_visibility.py` are collected by the existing `AI tests` PR CI job.
-These helpers do not change the stub endpoint's results or the shared API contract.
+These helpers do not change the shared API contract.
 
 `app.analysis.framework` turns exercise measurements into result objects without
 reading video. `RepSplitter(start_threshold, count_threshold, rest_threshold,
@@ -300,7 +301,9 @@ Returns `{"status": "ok"}` while the server is up. Docker and Azure use it to ch
 
 ### `POST /analyze`
 
-**For now this is a stub:** it ignores the video and returns a made-up result in the real shape. For `plank` it returns a hold result, for the other four exercises the same result with 3 reps and no sides (`side` is null; see `side-leg-raise.json` for reps with sides), and for any other name a failed result with `unknown_exercise`. The real pipeline replaces it in Sprint 2.
+For an exercise with an analyzer (`ANALYZERS` in `app/main.py`), it downloads `video_url` to a temporary folder, extracts the keypoints, runs the analyzer, and deletes the video. The download must be `http` or `https`, finish within 60 seconds, and be at most 500 MiB. At most 2 analyses run at once; other requests wait. These limits, and the 2-minute ffmpeg timeout, keep the work inside the backend's 230-second limit; SCRUM-74 confirms the numbers.
+
+Exercises without an analyzer still get a made-up result in the real shape, with `analyzer_version` ending in `-stub`: for `plank` a hold result, for the rest the same result with 3 reps and no sides (`side` is null; see `side-leg-raise.json` for reps with sides). Each one switches to real analysis when its analyzer is added. Any other name fails with `unknown_exercise`.
 
 Request (`session_id` is the backend's session id, a UUID):
 
@@ -336,7 +339,15 @@ Response: an `AnalysisResult`. Examples of every kind of result are in `docs/ana
 
 When a video cannot be analyzed (it is unreadable, too short or too long, has no person or several people, or the exercise is unknown), the answer is still `200`, with `status: "failed"`, an `error_code`, and its `error_message`. Build it with `AnalysisResult.failed(error_code, ANALYZER_VERSION)` so the message matches the list in [Failures](../docs/analysis-result.md#failures).
 
-If the video cannot be downloaded from `video_url`, or our own code raises an unexpected error (a bug), catch it, log it without the video link, and return `AnalysisResult.failed("analysis_error", ANALYZER_VERSION)`. Use `video_unreadable` only for a downloaded file that ffmpeg cannot decode, because its message asks the patient to record again. The stub does not catch errors yet, so a crash is an HTTP 500, which the backend records as `analysis_unavailable`.
+Real analysis fails with:
+
+| Error code | When |
+| --- | --- |
+| `video_unreadable` | ffmpeg cannot decode the downloaded file. Its message asks the patient to record again, so it is used for nothing else |
+| `no_person` | No frame has a person |
+| `analysis_error` | The download fails, ffmpeg times out or fails on a readable video (`VideoTimeoutError`, `NormalizeError`), or our own code raises an unexpected error (a bug). It is logged with the session id, never the video link |
+
+The clip length checks (`too_short`, `too_long`) and `multiple_people` are SCRUM-73.
 
 ## Adding an exercise
 

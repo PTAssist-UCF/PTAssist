@@ -23,8 +23,10 @@ MAX_SIDE_PIXELS = 1280
 # too_long when its keypoint data holds more than MAX_VIDEO_SECONDS of frames
 # (frame_count / fps). The extra second is what lets that check see "too long".
 MAX_NORMALIZED_SECONDS = MAX_VIDEO_SECONDS + 1
-# Normalizing a capped video takes well under a minute on one CPU; give up long after.
-NORMALIZE_TIMEOUT_SECONDS = 300
+# Normalizing a capped video takes well under a minute on one CPU. This stays well
+# under the backend's 230-second limit, so the failure can still reach it.
+NORMALIZE_TIMEOUT_SECONDS = 120
+INPUT_CHECK_TIMEOUT_SECONDS = 30
 # The most of ffmpeg's error output that is logged (see normalize).
 MAX_LOGGED_ERROR_CHARS = 200
 
@@ -48,6 +50,11 @@ class VideoTimeoutError(Exception):
 
 class OverlayError(Exception):
     """ffmpeg could not write the debug overlay. Our output failed, not the video."""
+
+
+class NormalizeError(Exception):
+    """ffmpeg can read the video but failed to normalize it, for example on a full
+    disk. The problem is on our side, so the patient must not record again."""
 
 
 def normalize_command(source: Path, target: Path) -> list[str]:
@@ -76,12 +83,22 @@ def normalize_command(source: Path, target: Path) -> list[str]:
     ]  # fmt: skip
 
 
+def input_check_command(source: Path) -> list[str]:
+    """The ffmpeg arguments that decode the first frame and write nothing."""
+    return [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+        "-i", str(source),
+        "-map", "0:v:0", "-frames:v", "1", "-f", "null", "-",
+    ]  # fmt: skip
+
+
 def normalize(source: Path, target: Path) -> None:
     """Run ffmpeg to write the normalized video.
 
-    Raises VideoError if ffmpeg cannot read the video, and VideoTimeoutError if it
-    runs longer than NORMALIZE_TIMEOUT_SECONDS. Neither message holds the input path,
-    which could contain a patient's name.
+    Raises VideoError if ffmpeg cannot read the video, NormalizeError if it can read
+    it but still failed, and VideoTimeoutError if it runs longer than
+    NORMALIZE_TIMEOUT_SECONDS. No message holds the input path, which could contain
+    a patient's name.
     """
     try:
         process = subprocess.run(
@@ -102,7 +119,25 @@ def normalize(source: Path, target: Path) -> None:
             process.returncode,
             _last_error_line(process.stderr, source),
         )
+        if _input_is_readable(source):
+            raise NormalizeError("ffmpeg could not normalize a readable video")
         raise VideoError("ffmpeg could not read the input video")
+
+
+def _input_is_readable(source: Path) -> bool:
+    """Whether ffmpeg can decode the first frame, to tell whose problem a failure is.
+
+    This writes nothing, so it still passes on a full disk or a missing encoder.
+    """
+    try:
+        process = subprocess.run(
+            input_check_command(source),
+            capture_output=True,
+            timeout=INPUT_CHECK_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return True  # Too slow to tell: do not blame the video.
+    return process.returncode == 0
 
 
 def _last_error_line(stderr: str, source: Path) -> str:
