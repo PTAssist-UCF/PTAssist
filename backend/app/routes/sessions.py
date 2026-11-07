@@ -1,17 +1,30 @@
-"""Patient uploads and session status, scoped through the owning plan."""
+"""Patient uploads and session status, scoped through the owning plan.
 
+A stored upload is handed to the background analysis (app/jobs/analysis.py).
+"""
+
+import contextlib
 import logging
 import uuid
 from typing import Annotated
 
 from azure.core.exceptions import AzureError
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+)
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.auth.current_user import CurrentUser
 from app.db import get_db
+from app.jobs.analysis import analyze_session
 from app.models import (
     ExerciseSession,
     Plan,
@@ -52,37 +65,52 @@ def create_session(
     video: Annotated[UploadFile, File(json_schema_extra={"format": "binary"})],
     db: Database,
     storage: Annotated[Storage, Depends(get_storage)],
+    background_tasks: BackgroundTasks,
 ) -> SessionResponse:
+    plan_exercise_id = target.id
+    # End the transaction the sign-in and ownership checks opened, so its database
+    # connection goes back to the pool. Checking the video (up to 15 seconds of
+    # ffprobe) and storing it (up to MAX_VIDEO_UPLOAD_BYTES) can take minutes, and a
+    # few slow uploads holding connections that long would use up the pool. The checks
+    # only read, and get_current_user has already committed a new user's row.
+    db.rollback()
     info = validate_video(video)
     session_id = uuid.uuid4()
     key = f"sessions/{session_id}{info.extension}"
-    session = ExerciseSession(
-        id=session_id,
-        plan_exercise_id=target.id,
-        status=SessionStatus.PROCESSING,
-        video_key=key,
-    )
-    upload_started = False
     try:
+        storage.upload(key, video.file, info.content_type)
+        # The session row only once the video is stored, in a short transaction.
+        session = ExerciseSession(
+            id=session_id,
+            plan_exercise_id=plan_exercise_id,
+            status=SessionStatus.PROCESSING,
+            video_key=key,
+        )
         db.add(session)
         db.flush()
         response = SessionResponse.model_validate(session)
-        upload_started = True
-        storage.upload(key, video.file, info.content_type)
         db.commit()
     except (AzureError, SQLAlchemyError, OSError):
         db.rollback()
-        if upload_started:
-            try:
-                storage.delete(key)
-            except (AzureError, OSError):
-                # Only a generated session UUID is logged. Cleanup failure must
-                # not replace the original response or expose a video URL.
-                logger.warning("Upload cleanup failed for session %s", session_id)
+        # No orphan blob: delete the video, even a partly uploaded one. No orphan row
+        # either: the row is committed only after the upload succeeded.
+        try:
+            storage.delete(key)
+        except (AzureError, OSError):
+            # Only a generated session UUID is logged. Cleanup failure must
+            # not replace the original response or expose a video URL.
+            logger.warning("Upload cleanup failed for session %s", session_id)
         raise HTTPException(
             503, "Could not save the video. Please try again."
         ) from None
-    # SCRUM-45 adds the background analysis handoff. This task leaves it processing.
+    # FastAPI closes the upload only after background tasks finish. Close it now, so
+    # its temporary file (up to MAX_VIDEO_UPLOAD_BYTES) is not kept on disk during
+    # the analysis, which can take minutes. An error here must not stop the analysis:
+    # the session is committed, and an exception would cancel the background task.
+    with contextlib.suppress(OSError):
+        video.file.close()
+    # Runs after the response is sent; the job opens its own database session.
+    background_tasks.add_task(analyze_session, session_id)
     return response
 
 

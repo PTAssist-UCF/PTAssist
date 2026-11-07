@@ -69,8 +69,9 @@ services:
       # backend/README.md, Storage in Docker Compose).
       STORAGE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=${AZURITE_ACCOUNT_KEY:-};BlobEndpoint=http://azurite:10000/devstoreaccount1;"
       STORAGE_CONTAINER: videos
-      MAX_VIDEO_UPLOAD_BYTES: ${MAX_VIDEO_UPLOAD_BYTES:-1073741824}
+      MAX_VIDEO_UPLOAD_BYTES: ${MAX_VIDEO_UPLOAD_BYTES:-524288000}
       AI_SERVICE_URL: http://ai:8001
+      AI_SERVICE_TIMEOUT_SECONDS: ${AI_SERVICE_TIMEOUT_SECONDS:-230}
     ports:
       - "127.0.0.1:8000:8000"
       - "[::1]:8000:8000"
