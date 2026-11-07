@@ -87,4 +87,24 @@ describe('ResultView', () => {
     );
     expect(screen.queryByRole('button', { name: 'Upload again' })).toBeNull();
   });
+
+  it('shows every issue even when a rep repeats the same issue code', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    show({
+      ...squat,
+      reps: [
+        {
+          ...squat.reps[1],
+          issues: [
+            { code: 'knees_cave_in', message: 'Your knees moved inward.' },
+            { code: 'knees_cave_in', message: 'Your knees moved inward again.' },
+          ],
+        },
+      ],
+    });
+    expect(screen.getByText('Your knees moved inward.')).toBeDefined();
+    expect(screen.getByText('Your knees moved inward again.')).toBeDefined();
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
 });

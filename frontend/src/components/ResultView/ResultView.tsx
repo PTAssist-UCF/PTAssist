@@ -87,8 +87,8 @@ export function ResultView({ result, onReupload }: ResultViewProps) {
                 </Group>
                 {rep.issues.length > 0 && (
                   <List size="sm" mt="xs">
-                    {rep.issues.map((issue) => (
-                      <List.Item key={issue.code}>{issue.message}</List.Item>
+                    {rep.issues.map((issue, i) => (
+                      <List.Item key={`${issue.code}-${i}`}>{issue.message}</List.Item>
                     ))}
                   </List>
                 )}
