@@ -1,3 +1,4 @@
+import { Link, useLocation } from 'react-router-dom';
 import {
   Container,
   Title,
@@ -9,12 +10,35 @@ import {
   Stack,
   SimpleGrid,
   Paper,
+  Alert,
 } from '@mantine/core';
 
 export default function PatientPage() {
+  const location = useLocation();
+  const uploadedSessionId = (location.state as { uploadedSessionId?: string } | null)
+    ?.uploadedSessionId;
+
   return (
     <Container size="lg" py="md">
       <Stack gap="lg">
+        {uploadedSessionId && (
+          <Alert color="teal" title="Upload in Progress">
+            <Group gap="xs" mb="xs">
+              <Text size="sm">
+                Session{' '}
+                <Text span fw={600}>
+                  {uploadedSessionId}
+                </Text>{' '}
+                was successfully uploaded and is currently
+              </Text>
+              <Badge color="yellow" variant="light">
+                processing
+              </Badge>
+            </Group>
+            <Text size="sm">Your feedback and scores will appear once analysis is complete.</Text>
+          </Alert>
+        )}
+
         <Paper withBorder p="lg" radius="md">
           <Title order={2} size="h3" mb="xs">
             My Exercise Plan
@@ -33,7 +57,13 @@ export default function PatientPage() {
               <Text size="sm" c="dimmed" mb="md">
                 Keep your back straight and knees behind your toes.
               </Text>
-              <Button color="teal" fullWidth radius="md">
+              <Button
+                color="teal"
+                fullWidth
+                radius="md"
+                component={Link}
+                to="/patient/upload?exercise=squat"
+              >
                 Record / Upload
               </Button>
             </Card>
@@ -46,7 +76,13 @@ export default function PatientPage() {
               <Text size="sm" c="dimmed" mb="md">
                 Raise your arm laterally up to shoulder height.
               </Text>
-              <Button color="teal" fullWidth radius="md">
+              <Button
+                color="teal"
+                fullWidth
+                radius="md"
+                component={Link}
+                to="/patient/upload?exercise=shoulder_abduction"
+              >
                 Record / Upload
               </Button>
             </Card>

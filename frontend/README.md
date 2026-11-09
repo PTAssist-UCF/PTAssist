@@ -19,6 +19,7 @@ src/
     patient/    My plan, upload, results, history
     therapist/  Patients, plan builder, patient detail, progress
   setupTests.ts Runs before every test (browser features jsdom lacks)
+  utils/        Shared helpers (for example video validation)
 ```
 
 ## Run locally
@@ -130,7 +131,7 @@ const { data: me, isLoading, error } = useGetMe();
 
 ## Upload and results
 
-1. The patient picks or records a video for an assigned exercise and uploads it.
+1. (SCRUM-58) The patient picks a file or records a video on a phone browser (`UploadPage.tsx`) for an assigned exercise, validated on the client for format (MP4/MOV/WebM), size (≤ 1 GiB), and duration (3s–120s) before upload with a progress bar (`uploadWithProgress`).
 2. The session starts as `processing`. The page polls the status every few seconds, and gives up after a timeout at least as long as the backend's cutoff for sessions stuck in `processing` (SCRUM-66), so it never gives up before the backend does (see [Clip limits and timing](../docs/analysis-result.md#clip-limits-and-timing)).
 3. On `complete`, show `rep_count` (or `hold_seconds` for a hold exercise such as the plank), the form score, and feedback. On `failed`, show `error_message`, and offer a re-upload unless `error_code` is `unknown_exercise` (uploading again would fail the same way).
 

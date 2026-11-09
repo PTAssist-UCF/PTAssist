@@ -4,8 +4,8 @@
  * PTAssist API
  * OpenAPI spec version: 0.1.0
  */
+import type { HealthResponseStatus } from './healthResponseStatus';
 
-export const HealthResponseValue = {
-  status: 'ok',
-} as const;
-export type HealthResponse = typeof HealthResponseValue;
+export interface HealthResponse {
+  status: HealthResponseStatus;
+}

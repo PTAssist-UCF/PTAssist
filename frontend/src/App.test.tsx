@@ -374,7 +374,6 @@ describe('app shell and role navigation', () => {
   });
 
   it.each([
-    ['patient', '/patient/upload', 'Upload Video'],
     ['patient', '/patient/history', 'Results & History'],
     ['therapist', '/therapist/plans', 'Plan Builder'],
     ['therapist', '/therapist/progress', 'Progress & Analytics'],
@@ -390,6 +389,19 @@ describe('app shell and role navigation', () => {
     // Not the main page of that side.
     expect(screen.queryByText('My Exercise Plan')).toBeNull();
     expect(screen.queryByText('Assigned Patients')).toBeNull();
+  });
+
+  it('renders the upload page for a patient at /patient/upload', async () => {
+    clerk.isSignedIn = true;
+    api = fakeApi(200, { ...ME, role: 'patient' });
+    vi.stubGlobal('fetch', api);
+
+    renderApp('/patient/upload');
+
+    expect(await screen.findByRole('heading', { name: 'Upload Video' })).toBeDefined();
+    expect(screen.getByLabelText(/plan exercise id/i)).toBeDefined();
+    expect(screen.getByRole('button', { name: /record with camera/i })).toBeDefined();
+    expect(screen.getByRole('button', { name: /choose video file/i })).toBeDefined();
   });
 
   it('hides the email on phone widths, so Sign out still fits in the header', async () => {

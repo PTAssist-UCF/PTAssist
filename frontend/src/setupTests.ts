@@ -23,3 +23,10 @@ class ResizeObserver {
   disconnect() {}
 }
 window.ResizeObserver = ResizeObserver;
+
+if (typeof window.URL.createObjectURL === 'undefined') {
+  window.URL.createObjectURL = () => 'blob:http://localhost/mock-video-url';
+}
+if (typeof window.URL.revokeObjectURL === 'undefined') {
+  window.URL.revokeObjectURL = () => {};
+}

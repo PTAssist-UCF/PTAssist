@@ -5,6 +5,12 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from './bodyCreateSession';
 export * from './healthResponse';
+export * from './healthResponseStatus';
+export * from './hTTPValidationError';
 export * from './meResponse';
 export * from './role';
+export * from './sessionResponse';
+export * from './sessionStatus';
+export * from './validationError';

@@ -9,6 +9,7 @@ import RequireSignIn from '@/components/RequireSignIn';
 import SignInPage from './pages/SignInPage';
 import SignUpPage from './pages/SignUpPage';
 import PatientPage from './pages/patient/PatientPage';
+import UploadPage from './pages/patient/UploadPage';
 import TherapistPage from './pages/therapist/TherapistPage';
 import RoleRedirect from '@/components/RoleRedirect';
 import RoleRoute from '@/components/RoleRoute';
@@ -46,7 +47,7 @@ export default function App() {
                 path="/patient/upload"
                 element={
                   <RoleRoute role="patient">
-                    <ComingSoon title="Upload Video" />
+                    <UploadPage />
                   </RoleRoute>
                 }
               />
