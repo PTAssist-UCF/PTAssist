@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { focusManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -90,6 +90,27 @@ describe('useSessionStatus', () => {
     const calls = mockApiFetch.mock.calls.length;
     await advance(POLL_INTERVAL_MS * 10);
     expect(mockApiFetch).toHaveBeenCalledTimes(calls);
+  });
+
+  it('keeps polling while the tab is hidden', async () => {
+    mockApiFetch
+      .mockResolvedValueOnce(session('processing'))
+      .mockResolvedValue(session('complete'));
+
+    const { result } = setup();
+    await advance(0);
+    expect(result.current.status).toBe('processing');
+
+    // The patient switches tabs, and the analysis finishes while they are away.
+    act(() => focusManager.setFocused(false));
+    try {
+      await advance(POLL_TIMEOUT_MS + POLL_INTERVAL_MS);
+    } finally {
+      act(() => focusManager.setFocused(undefined)); // back to the browser's real state
+    }
+
+    expect(result.current.status).toBe('complete');
+    expect(result.current.timedOut).toBe(false);
   });
 
   it('stops polling on an error such as 404', async () => {

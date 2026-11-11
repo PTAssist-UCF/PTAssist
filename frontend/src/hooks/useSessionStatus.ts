@@ -18,6 +18,10 @@ export function useSessionStatus(sessionId: string | undefined) {
   const query = useGetSession(sessionId ?? '', {
     query: {
       enabled: Boolean(sessionId) && !timedOut,
+      // Keep polling while the tab is hidden. Otherwise polling pauses but the timeout
+      // below keeps running, so a patient who switches tabs would see "timed out" even
+      // after the analysis finished.
+      refetchIntervalInBackground: true,
       refetchInterval: (q) => {
         if (q.state.status === 'error') return false; // e.g. 404: retrying won't help
         const status = q.state.data?.status;
