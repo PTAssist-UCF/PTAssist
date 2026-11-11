@@ -54,8 +54,8 @@ export const createSession = async (
   options?: Parameters<typeof apiFetch>[1],
 ): Promise<SessionResponse> => {
   const formData = new FormData();
-  formData.append(`plan_exercise_id`, bodyCreateSession.plan_exercise_id);
   formData.append(`video`, bodyCreateSession.video);
+  formData.append(`plan_exercise_id`, bodyCreateSession.plan_exercise_id);
 
   return apiFetch<SessionResponse>(getCreateSessionUrl(), {
     ...options,

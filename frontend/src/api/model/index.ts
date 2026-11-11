@@ -7,10 +7,12 @@
 
 export * from './bodyCreateSession';
 export * from './healthResponse';
-export * from './healthResponseStatus';
 export * from './hTTPValidationError';
+export * from './linkedPatientResponse';
+export * from './linkPatientRequest';
 export * from './meResponse';
 export * from './role';
 export * from './sessionResponse';
 export * from './sessionStatus';
 export * from './validationError';
+export * from './validationErrorCtx';

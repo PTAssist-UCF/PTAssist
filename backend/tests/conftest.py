@@ -1,7 +1,11 @@
-"""Shared test setup: a real Postgres test database, real Azurite storage, a fake Clerk.
+"""Shared test setup: a real Postgres test database, real Azurite storage, a fake Clerk,
+and a fake AI service.
 
 Tests never call Clerk. FakeClerk signs session tokens with a key made here and answers
 the two network calls the Clerk SDK makes, so the SDK still checks every token for real.
+
+Tests never call the AI service either. FakeAIService answers the background analysis's
+POST /analyze, so no AI container is needed.
 """
 
 # The environment must be set before the app is imported, so imports come after it.
@@ -26,6 +30,7 @@ os.environ["STORAGE_CONNECTION_STRING"] = os.environ.get(
 )
 os.environ["STORAGE_CONTAINER"] = f"test-{uuid.uuid4().hex}"
 
+import json
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -48,12 +53,15 @@ from sqlalchemy.orm import Session
 
 from app.auth.clerk import get_clerk
 from app.db import engine
+from app.jobs import analysis
 from app.main import app
 from app.models import Base
 from app.storage.blob import Storage, get_storage
 
 SIGNING_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 KEY_ID = "test-key"
+# Example analysis results (docs/analysis-result.md, Examples). FakeAIService uses one.
+EXAMPLE_RESULTS = Path(__file__).parents[2] / "docs" / "analysis-result-examples"
 
 
 class FakeClerk:
@@ -109,6 +117,38 @@ class FakeClerk:
         )
 
 
+class FakeAIService:
+    """Plays the AI service's POST /analyze for the background analysis.
+
+    Every call gets `status_code` with `body` as JSON (bytes are sent as they are), by
+    default 200 and the example squat result, or raises `error` (an httpx exception
+    such as httpx.ConnectError) if it is set. `requests` holds each call's JSON.
+    """
+
+    def __init__(self) -> None:
+        self.requests: list[dict[str, Any]] = []
+        self.status_code = 200
+        self.body: Any = json.loads(
+            (EXAMPLE_RESULTS / "squat.json").read_text(encoding="utf-8")
+        )
+        self.error: Exception | None = None
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        assert (request.method, request.url.path) == ("POST", "/analyze")
+        self.requests.append(json.loads(request.content))
+        if self.error is not None:
+            raise self.error
+        if isinstance(self.body, bytes):
+            return httpx.Response(self.status_code, content=self.body)
+        return httpx.Response(self.status_code, json=self.body)
+
+    def client(self) -> httpx.Client:
+        """Stands in for app.jobs.analysis.ai_service_client."""
+        return httpx.Client(
+            base_url="http://ai.test", transport=httpx.MockTransport(self.handle)
+        )
+
+
 @pytest.fixture(scope="session")
 def alembic_config() -> Config:
     """Alembic settings for running the real migrations on the test database."""
@@ -160,7 +200,16 @@ def clerk(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeClerk]:
 
 
 @pytest.fixture
-def client(db: Session, clerk: FakeClerk) -> TestClient:
+def ai_service(monkeypatch: pytest.MonkeyPatch) -> FakeAIService:
+    """A FakeAIService, called by the background analysis in place of the real one."""
+    fake = FakeAIService()
+    monkeypatch.setattr(analysis, "ai_service_client", fake.client)
+    return fake
+
+
+@pytest.fixture
+def client(db: Session, clerk: FakeClerk, ai_service: FakeAIService) -> TestClient:
+    """The API. TestClient runs an upload's background analysis before it returns."""
     return TestClient(app)
 
 
