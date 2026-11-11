@@ -13,12 +13,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app import uploads
+from app.db import engine
 from app.models import (
     Exercise,
     ExerciseSession,
     Plan,
     PlanExercise,
     Role,
+    SessionResult,
     SessionStatus,
     TherapistPatient,
     User,
@@ -27,6 +29,7 @@ from app.schemas.analysis_contract import (
     ERROR_MESSAGES,
     MAX_VIDEO_SECONDS,
     MIN_VIDEO_SECONDS,
+    AnalysisResult,
 )
 
 
@@ -129,7 +132,6 @@ def test_upload_stores_private_video_and_creates_processing_session(
     assert result["created_at"]
     saved = db.get(ExerciseSession, uuid.UUID(result["id"]))
     assert saved.video_key == f"sessions/{saved.id}{extension}"
-    assert saved.result is None
     link = storage.read_url(saved.video_key)
     stored = httpx.get(link)
     assert stored.status_code == 200
@@ -138,7 +140,8 @@ def test_upload_stores_private_video_and_creates_processing_session(
     assert httpx.get(link.split("?", 1)[0]).status_code == 403
     status = client.get("/sessions/" + result["id"], headers=clerk.headers("user_p"))
     assert status.status_code == 200
-    assert status.json() == result
+    # The background analysis has run by now (the fake AI service answered).
+    assert status.json() == {**result, "status": "complete"}
 
 
 def test_client_content_type_is_not_used_for_the_stored_blob(
@@ -209,9 +212,68 @@ def test_wrong_type_or_unreadable_file_is_rejected(
     assert sessions_count(db) == 0
 
 
-def test_real_container_must_match_extension(client, clerk, assignment, db, make_video):
-    response = post_video(client, clerk, assignment, make_video(".webm"))
+@pytest.mark.parametrize(
+    "content,filename",
+    [
+        (".webm", "exercise.mp4"),
+        (".webm", "exercise.mov"),
+        (".mp4", "exercise.webm"),
+        (".mov", "exercise.webm"),
+    ],
+)
+def test_real_container_must_match_extension(
+    client, clerk, assignment, db, make_video, content, filename
+):
+    response = post_video(client, clerk, assignment, make_video(content), filename)
     assert response.status_code == 415
+    assert sessions_count(db) == 0
+
+
+@pytest.mark.parametrize(
+    "content,filename,mime,stored_type",
+    [
+        # Some phones save an ISO MP4 with a .mov name.
+        (".mp4", "exercise.mov", "video/quicktime", "video/mp4"),
+        (".mov", "exercise.mp4", "video/mp4", "video/quicktime"),
+    ],
+)
+def test_mp4_and_mov_names_are_interchangeable_and_stored_as_inspected(
+    client,
+    clerk,
+    assignment,
+    db,
+    storage,
+    make_video,
+    content,
+    filename,
+    mime,
+    stored_type,
+):
+    contents = make_video(content)
+    response = post_video(client, clerk, assignment, contents, filename, mime)
+    assert response.status_code == 201, response.text
+    saved = db.get(ExerciseSession, uuid.UUID(response.json()["id"]))
+    assert saved.video_key == f"sessions/{saved.id}{content}"
+    stored = httpx.get(storage.read_url(saved.video_key))
+    assert stored.content == contents
+    assert stored.headers["content-type"] == stored_type
+
+
+def test_inspection_timeout_is_a_server_error_not_a_bad_video(
+    client, clerk, assignment, db, storage, make_video, monkeypatch
+):
+    contents = make_video()  # before subprocess.run is replaced below
+
+    def too_slow(*args, **kwargs):
+        raise subprocess.TimeoutExpired("ffprobe", uploads.PROBE_TIMEOUT_SECONDS)
+
+    monkeypatch.setattr(uploads.subprocess, "run", too_slow)
+    monkeypatch.setattr(
+        storage, "upload", lambda *args: pytest.fail("No upload expected")
+    )
+    response = post_video(client, clerk, assignment, contents)
+    assert response.status_code == 503
+    assert response.json()["detail"] != ERROR_MESSAGES["video_unreadable"]
     assert sessions_count(db) == 0
 
 
@@ -286,7 +348,7 @@ def test_linked_therapist_can_read_status(client, clerk, assignment, make_video)
     created = post_video(client, clerk, assignment, make_video()).json()
     response = client.get("/sessions/" + created["id"], headers=clerk.headers("user_t"))
     assert response.status_code == 200
-    assert response.json() == created
+    assert response.json() == {**created, "status": "complete"}
 
 
 @pytest.mark.parametrize("status", [SessionStatus.COMPLETE, SessionStatus.FAILED])
@@ -308,7 +370,7 @@ def test_missing_session_is_not_found(client, clerk, assignment):
 
 
 def test_storage_failure_leaves_no_session(
-    client, clerk, assignment, db, storage, make_video, monkeypatch
+    client, clerk, assignment, db, storage, make_video, monkeypatch, ai_service
 ):
     keys = []
     original_upload = storage.upload
@@ -325,10 +387,11 @@ def test_storage_failure_leaves_no_session(
     assert sessions_count(db) == 0
     assert len(keys) == 1
     assert httpx.get(storage.read_url(keys[0])).status_code == 404
+    assert ai_service.requests == []  # nothing to analyze
 
 
 def test_failed_commit_removes_the_uploaded_file(
-    client, clerk, assignment, db, storage, make_video, monkeypatch
+    client, clerk, assignment, db, storage, make_video, monkeypatch, ai_service
 ):
     keys = []
     original_upload = storage.upload
@@ -347,10 +410,98 @@ def test_failed_commit_removes_the_uploaded_file(
     assert sessions_count(db) == 0
     assert len(keys) == 1
     assert httpx.get(storage.read_url(keys[0])).status_code == 404
+    assert ai_service.requests == []  # nothing to analyze
+
+
+def test_no_database_connection_is_held_while_checking_and_storing_the_video(
+    client, clerk, assignment, db, storage, make_video, monkeypatch
+):
+    """Inspection and a large upload can take minutes. Holding a pooled connection
+    meanwhile would let a few slow uploads use up the pool."""
+    contents = make_video()
+    plan_exercise_id = str(assignment.id)
+    db.rollback()  # this test's own session gives its connection back too
+    original_upload = storage.upload
+    in_use = []
+
+    def check(video):
+        in_use.append(engine.pool.checkedout())
+        return uploads.validate_video(video)
+
+    def upload(key, data, content_type):
+        in_use.append(engine.pool.checkedout())
+        original_upload(key, data, content_type)
+
+    monkeypatch.setattr("app.routes.sessions.validate_video", check)
+    monkeypatch.setattr(storage, "upload", upload)
+    response = client.post(
+        "/sessions",
+        data={"plan_exercise_id": plan_exercise_id},
+        files={"video": ("exercise.mp4", contents, "video/mp4")},
+        headers=clerk.headers("user_p"),
+    )
+    assert response.status_code == 201, response.text
+    assert in_use == [0, 0]
+    assert sessions_count(db) == 1
+
+
+def test_upload_is_analyzed_in_the_background_and_ends_complete(
+    client, clerk, assignment, db, storage, make_video, ai_service
+):
+    contents = make_video()
+    response = post_video(client, clerk, assignment, contents)
+    assert response.status_code == 201
+    created = response.json()
+    assert created["status"] == "processing"  # answered before the analysis ran
+    [request] = ai_service.requests
+    assert request["session_id"] == created["id"]
+    assert request["exercise"] == "squat"
+    assert httpx.get(request["video_url"]).content == contents  # a working read link
+    status = client.get("/sessions/" + created["id"], headers=clerk.headers("user_p"))
+    assert status.json()["status"] == "complete"
+    saved = db.get(SessionResult, uuid.UUID(created["id"]))
+    assert saved.result == ai_service.body
+
+
+def test_upload_with_the_ai_service_down_ends_failed(
+    client, clerk, assignment, db, make_video, ai_service
+):
+    ai_service.error = httpx.ConnectError("Connection refused")
+    created = post_video(client, clerk, assignment, make_video()).json()
+    status = client.get("/sessions/" + created["id"], headers=clerk.headers("user_p"))
+    assert status.json()["status"] == "failed"
+    saved = db.get(SessionResult, uuid.UUID(created["id"]))
+    assert saved.result == AnalysisResult.failed(
+        "analysis_unavailable", analyzer_version=None
+    ).model_dump(mode="json")
+
+
+def test_upload_schedules_the_analysis_once_the_session_is_saved(
+    client, clerk, assignment, make_video, monkeypatch
+):
+    videos = []
+    scheduled = []
+
+    def check(video):
+        videos.append(video)
+        return uploads.validate_video(video)
+
+    def analyze(session_id):
+        # Like the job, outside the request: the session must already be committed.
+        with Session(engine) as other:
+            status = other.get(ExerciseSession, session_id).status
+        # The upload's temporary file must not stay on disk during the analysis.
+        scheduled.append((session_id, status, videos[0].file.closed))
+
+    monkeypatch.setattr("app.routes.sessions.validate_video", check)
+    monkeypatch.setattr("app.routes.sessions.analyze_session", analyze)
+    response = post_video(client, clerk, assignment, make_video())
+    assert response.status_code == 201
+    assert scheduled == [(uuid.UUID(response.json()["id"]), "processing", True)]
 
 
 def test_filename_and_video_details_are_not_logged(
-    client, clerk, assignment, make_video, caplog
+    client, clerk, assignment, make_video, caplog, ai_service
 ):
     filename = "private-patient-name.mp4"
     caplog.set_level(logging.INFO)
@@ -358,6 +509,10 @@ def test_filename_and_video_details_are_not_logged(
     assert response.status_code == 201
     assert filename not in caplog.text
     assert "Bearer " not in caplog.text
+    # The background analysis logs the session id, never the video's read link.
+    assert response.json()["id"] in caplog.text
+    assert ai_service.requests[0]["video_url"] not in caplog.text
+    assert "sig=" not in caplog.text
 
 
 def test_openapi_describes_upload_form_and_response():

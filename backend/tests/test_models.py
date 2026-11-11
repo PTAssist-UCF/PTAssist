@@ -3,6 +3,7 @@ enforces on its own (constraints), so bad rows are refused even if an endpoint f
 to check."""
 
 import json
+import uuid
 from pathlib import Path
 
 import pytest
@@ -55,7 +56,9 @@ def add_session(db: Session, plan: Plan) -> ExerciseSession:
         plan=plan, exercise=exercise(db, "squat"), reps=10, sets=3, times_per_week=3
     )
     session = ExerciseSession(
-        plan_exercise=plan_exercise, status=SessionStatus.PROCESSING
+        plan_exercise=plan_exercise,
+        status=SessionStatus.PROCESSING,
+        video_key=f"sessions/{uuid.uuid4()}.mp4",
     )
     db.add(session)
     db.commit()
@@ -181,6 +184,14 @@ def test_session_status_must_be_a_known_one(db: Session, plan: Plan) -> None:
     session.status = "done"
 
     with pytest.raises(IntegrityError, match="ck_sessions_status"):
+        db.flush()
+
+
+def test_a_session_needs_a_video_key(db: Session, plan: Plan) -> None:
+    session = add_session(db, plan)
+    session.video_key = None
+
+    with pytest.raises(IntegrityError, match='column "video_key"'):
         db.flush()
 
 

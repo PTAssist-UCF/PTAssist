@@ -6,6 +6,6 @@
  */
 
 export interface BodyCreateSession {
-  plan_exercise_id: string;
   video: Blob | File;
+  plan_exercise_id: string;
 }
