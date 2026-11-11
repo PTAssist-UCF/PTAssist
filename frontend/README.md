@@ -127,6 +127,7 @@ const { data: me, isLoading, error } = useGetMe();
 - **One shared cache:** `src/main.tsx` wraps the app in a `QueryClientProvider`, so every component that calls `useGetMe()` shares one request and one cached answer. TanStack Query refreshes it in the background when needed, for example when you come back to the tab. `ApiAuth` empties the cache whenever nobody is signed in, so the next user never sees the previous user's data.
 - **Browser access (CORS):** the browser lets the web app read the API's answers only if the page's origin is in `CLERK_AUTHORIZED_PARTIES` in the root `/.env` (`http://localhost:5173`, this dev server, by default). If you run the dev server on another port or host, add it there and run `docker compose up -d api` again (or restart the API, if you run it yourself), or requests fail with "Failed to fetch". See `backend/README.md`, Browser access (CORS).
 - **Tests:** `src/apiClient.test.tsx` shows how to test a hook against a fake API, with no backend running. `src/App.test.tsx` does the same for whole pages, with a fake Clerk.
+- **Status polling:** `useSessionStatus(sessionId)` in `src/hooks/` wraps `useGetSession` and polls every 3 seconds. It stops when the session is `complete` or `failed`, or on an error such as 404. After `POLL_TIMEOUT_MS` it stops and returns `timedOut: true`, so the page can show a message. The timeout must stay at least as long as the backend's stuck-session cutoff (SCRUM-66); see [Clip limits and timing](../docs/analysis-result.md#clip-limits-and-timing).
 
 ## Upload and results
 
