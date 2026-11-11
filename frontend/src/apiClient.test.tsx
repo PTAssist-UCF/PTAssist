@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 
 import { useGetMe } from '@/api/me';
-import { ApiError, setTokenGetter, setUnauthorizedHandler } from '@/apiClient';
+import { ApiError, setTokenGetter, setUnauthorizedHandler, uploadWithProgress } from '@/apiClient';
 import ApiAuth from '@/components/ApiAuth';
 import { shouldRetryQuery } from '@/main';
 
@@ -204,5 +204,96 @@ describe('shouldRetryQuery', () => {
     expect(shouldRetryQuery(0, networkError)).toBe(true);
     expect(shouldRetryQuery(2, networkError)).toBe(true);
     expect(shouldRetryQuery(3, networkError)).toBe(false);
+  });
+});
+
+describe('uploadWithProgress', () => {
+  const originalXHR = window.XMLHttpRequest;
+
+  class FakeXHR {
+    static instance: FakeXHR;
+    constructor() {
+      FakeXHR.instance = this;
+    }
+    open = vi.fn();
+    setRequestHeader = vi.fn();
+    send = vi.fn();
+    abort = vi.fn();
+    status = 200;
+    responseText = '{}';
+    upload: { onprogress: ((ev: ProgressEvent) => void) | null } = { onprogress: null };
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+  }
+
+  beforeEach(() => {
+    window.XMLHttpRequest = FakeXHR as unknown as typeof XMLHttpRequest;
+  });
+
+  afterEach(() => {
+    window.XMLHttpRequest = originalXHR;
+  });
+
+  it('sends POST request to API URL with Clerk auth header and progress callbacks', async () => {
+    setTokenGetter(async () => 'clerk-token');
+    const onProgress = vi.fn();
+    const formData = new FormData();
+    formData.append('key', 'val');
+
+    const promise = uploadWithProgress('/sessions', formData, { onProgress });
+
+    await waitFor(() => expect(FakeXHR.instance).toBeDefined());
+    const xhr = FakeXHR.instance;
+
+    expect(xhr.open).toHaveBeenCalledWith('POST', 'http://api.test/sessions');
+    expect(xhr.setRequestHeader).toHaveBeenCalledWith('Authorization', 'Bearer clerk-token');
+    expect(xhr.send).toHaveBeenCalledWith(formData);
+
+    xhr.upload.onprogress?.({
+      lengthComputable: true,
+      loaded: 40,
+      total: 100,
+    } as ProgressEvent);
+
+    expect(onProgress).toHaveBeenCalledWith({ loaded: 40, total: 100, percent: 40 });
+
+    xhr.status = 201;
+    xhr.responseText = JSON.stringify({ id: 'sess-1', status: 'processing' });
+    xhr.onload?.();
+
+    const res = await promise;
+    expect(res).toEqual({ id: 'sess-1', status: 'processing' });
+  });
+
+  it('invokes unauthorizedHandler on 401 responses', async () => {
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+
+    const promise = uploadWithProgress('/sessions', new FormData());
+
+    await waitFor(() => expect(FakeXHR.instance).toBeDefined());
+    const xhr = FakeXHR.instance;
+
+    xhr.status = 401;
+    xhr.responseText = JSON.stringify({ detail: 'Token expired' });
+    xhr.onload?.();
+
+    await expect(promise).rejects.toBeInstanceOf(ApiError);
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  });
+
+  it('aborts upload when signal is triggered', async () => {
+    const controller = new AbortController();
+    const promise = uploadWithProgress('/sessions', new FormData(), {
+      signal: controller.signal,
+    });
+
+    await waitFor(() => expect(FakeXHR.instance).toBeDefined());
+    const xhr = FakeXHR.instance;
+
+    controller.abort();
+
+    expect(xhr.abort).toHaveBeenCalled();
+    await expect(promise).rejects.toThrow('Upload aborted');
   });
 });
