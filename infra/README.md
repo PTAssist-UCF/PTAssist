@@ -1,12 +1,14 @@
 # Infrastructure
 
+> **On hold (since Nov 11, 2026).** The sponsor is still deciding where PTAssist will be hosted, so none of the resources below exist yet, and all work is local (Docker Compose). This file is the plan if the sponsor picks Azure. The Azure tasks (SCRUM-46, 47, 55, 67, 74, 81, 84, and 106) wait in the Jira backlog with "ON HOLD" in their titles. See `AGENTS.md`, section 2.
+
 Our Azure resources are created by hand in the Azure Portal. This file is the written record of every setting, so we can rebuild everything in a new subscription (the student credit expires around late February 2027).
 
 **If you change anything in the Portal, update this file in the same PR or right after.**
 
 ## Resources
 
-Filled in during Sprint 2 (task SCRUM-46).
+Filled in by SCRUM-46, once the sponsor decides on hosting.
 
 | Resource | Azure service | Name | Key settings |
 | --- | --- | --- | --- |
