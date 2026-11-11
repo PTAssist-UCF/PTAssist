@@ -66,6 +66,12 @@ export default function PatientPage() {
           </Alert>
         )}
 
+        {/* The exercises below come from mockExercises.ts, not the patient's real plan.
+            Remove this note once the page loads the real plan from the API. */}
+        <Alert color="gray" title="Sample data">
+          These exercises and progress numbers are examples, not your real plan yet.
+        </Alert>
+
         <Paper
           withBorder
           p="lg"
@@ -234,7 +240,7 @@ export default function PatientPage() {
                         size="xs"
                         radius="md"
                         component={Link}
-                        to={`/patient/upload?plan_exercise_id=${exercise.id}&exercise=${exercise.name}`}
+                        to={`/patient/upload?exercise=${exercise.name}`}
                         onClick={(e) => e.stopPropagation()}
                       >
                         Record / Upload
@@ -348,7 +354,7 @@ export default function PatientPage() {
                   color="teal"
                   size="md"
                   component={Link}
-                  to={`/patient/upload?plan_exercise_id=${expandedExercise.id}&exercise=${expandedExercise.name}`}
+                  to={`/patient/upload?exercise=${expandedExercise.name}`}
                 >
                   Record / Upload Set
                 </Button>

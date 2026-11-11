@@ -115,15 +115,21 @@ describe('PatientPage Dashboard', () => {
     fireEvent.click(highContrastSwitch);
   });
 
-  it('links the Record / Upload button directly to /patient/upload with query parameters', () => {
+  it('links the Record / Upload button to /patient/upload without a made-up plan exercise id', () => {
     renderPatientPage();
 
     const uploadButtons = screen.getAllByRole('link', { name: /record \/ upload/i });
     expect(uploadButtons.length).toBe(MOCK_ASSIGNED_EXERCISES.length);
 
     const firstButton = uploadButtons[0];
-    expect(firstButton.getAttribute('href')).toContain('/patient/upload?plan_exercise_id=');
-    expect(firstButton.getAttribute('href')).toContain('exercise=');
+    expect(firstButton.getAttribute('href')).toBe(
+      `/patient/upload?exercise=${MOCK_ASSIGNED_EXERCISES[0].name}`,
+    );
+  });
+
+  it('says the exercises are sample data', () => {
+    renderPatientPage();
+    expect(screen.getByText('Sample data')).toBeDefined();
   });
 
   it('shows processing notification when redirected after a session upload', () => {

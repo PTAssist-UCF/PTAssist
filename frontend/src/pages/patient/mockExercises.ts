@@ -109,6 +109,9 @@ const catCowSvg = `
   <line x1="30" y1="125" x2="160" y2="125" stroke="#20c997" stroke-width="3" stroke-linecap="round" opacity="0.6"/>
 `;
 
+// Sample data until the page loads the patient's real plan from the API.
+// The ids are made up and only used as React keys: they are not real plan exercise ids,
+// so never send them to the API (POST /sessions would answer 404 "Plan exercise not found").
 export const MOCK_ASSIGNED_EXERCISES: AssignedExercise[] = [
   {
     id: 'a1b2c3d4-e5f6-7890-1234-56789abcdef0',
