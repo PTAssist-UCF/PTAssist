@@ -11,8 +11,9 @@ PTAssist is an AI-augmented remote physical therapy platform, built by a 7-perso
 - The system runs **pose estimation**, counts reps, scores form, and writes feedback.
 - The therapist reviews results and progress on a **dashboard**.
 
-**Current scope: proof of concept**, due Fri Nov 20, 2026.
+**Current scope: proof of concept.** Implementation done by Tue Dec 22, 2026, with a hard deadline of Mon Jan 11, 2027 (schedule in section 2).
 
+- Runs locally only for now: hosting is on hold while the sponsor decides (section 2).
 - Web app only, for patients and therapists.
 - Upload only (no live video).
 - 5 exercises, picked by the AI team in Sprint 1. Their names in the API are in [`docs/analysis-result.md`](docs/analysis-result.md#exercise-names).
@@ -23,6 +24,23 @@ PTAssist is an AI-augmented remote physical therapy platform, built by a 7-perso
 ## 2. Status
 
 The project is under active development: each service has working code, and features are added task by task. If a command, file, or folder described here does not exist yet, it is probably part of an open task. Check Jira before creating it.
+
+**Schedule** (set Nov 11, 2026). Sprints are two weeks long, and Jira has the current sprint and its tasks.
+
+| Sprint | Dates | Goal |
+| --- | --- | --- |
+| 3 | Nov 11 to Nov 24 | Locally, a therapist links a patient and assigns a plan, and the patient uploads and sees real results for exercises 1 and 2 |
+| 4 | Nov 25 to Dec 8 | Locally, all 5 exercises work end to end, and every main patient and therapist page exists. Thanksgiving break is Nov 23 to 27 |
+| 5 | Dec 9 to Dec 22 | Feature complete Mon Dec 14, acceptance runs, sign-off Tue Dec 22, then retro and docs |
+
+Winter break is Dec 10 to Jan 11. Dec 23 to Jan 10 is a buffer for leftovers only, not new work. The hard deadline for implementation is Mon Jan 11, 2027.
+
+**Hosting is on hold.** The sponsor is still deciding where PTAssist will be hosted, so nothing runs in the cloud and no Azure resources exist. Until the sponsor decides:
+
+- Work is purely local: Docker Compose (Postgres, Azurite, the API, and the AI service) plus the Vite dev server. A task whose "Done when" says "on Azure" or "on the Azure app" is checked locally instead.
+- Keep the code ready for the cloud anyway: config from environment variables, video storage only through `backend/app/storage/` (the same Azure Blob SDK code runs against Azurite), and nothing that only works on one person's machine.
+- Don't start the Azure tasks. They wait in the Jira backlog with "ON HOLD" in their titles: SCRUM-46, 47, 55, 67, 74, 81, 84, and 106.
+- Don't set up another cloud provider or hosting service. The Azure rows in section 3 and `infra/README.md` stay the plan if the sponsor picks Azure. If they pick something else, those rows change then.
 
 ## 3. Architecture (settled)
 
@@ -38,8 +56,8 @@ These decisions are final. **Do not change them, add alternatives, or introduce 
 | Database | PostgreSQL. AI results in JSONB columns. Schema changes **only** through Alembic migrations |
 | Storage | Azure Blob Storage in the cloud, Azurite (Microsoft's Azure Storage emulator) locally. One storage module in the backend (`backend/app/storage/`), built on the Azure Blob SDK, serves both. Private containers, temporary read links |
 | Auth and roles | Clerk handles identity only. The role (`patient` or `therapist`) lives in our `User` table. `GET /me` returns it. New users are auto-created as patients; therapists are promoted by the team |
-| Hosting | Azure Container Apps (scale to zero) for API and AI service. Images in GitHub Container Registry. Azure resources are set up by hand in the Portal and recorded in `infra/README.md` |
-| CI/CD | GitHub Actions. On PRs: lint, tests, image build. On merge to main: build and push images, run migrations as a Container Apps job, deploy. Azure login uses OIDC |
+| Hosting | Azure Container Apps (scale to zero) for API and AI service. Images in GitHub Container Registry. Azure resources are set up by hand in the Portal and recorded in `infra/README.md`. **On hold:** the sponsor is still deciding on hosting, so work is local for now (section 2) |
+| CI/CD | GitHub Actions. On PRs: lint, tests, image build. On merge to main: build and push images, run migrations as a Container Apps job, deploy. Azure login uses OIDC. **The deploy on merge is on hold with hosting**; the PR checks run as usual |
 | Local dev | Docker Compose runs Postgres, Azurite, the API, and the AI service |
 
 **Core data model:** `User`, `TherapistPatient`, `Exercise`, `Plan`, `PlanExercise`, `Session`, `SessionResult`. Details in `backend/README.md`.
@@ -67,7 +85,7 @@ ai/                  Analysis service
   app/analysis/      Shared analysis logic (angles, smoothing, rep splitting, scoring)
   app/analysis/exercises/  One file per exercise
   tests/fixtures/    Keypoint JSON test data (no videos except small licensed clips)
-infra/README.md      Record of every Azure setting
+infra/README.md      Record of every Azure setting (on hold until hosting is decided)
 docs/                Specs, test data plan, security checklist, reports
 compose.yaml         Local stack: Postgres, Azurite, the API, and the AI service
 .env.example         Local environment variables (backend, AI, Compose)

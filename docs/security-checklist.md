@@ -5,7 +5,7 @@ The security goals for the proof of concept, how we plan to meet each one, and w
 ## Read this first
 
 - **These are goals, not requirements.** This page is our plan for keeping the proof of concept safe. If a goal turns out to cost too much for the proof of concept, SCRUM-85 lists it as deferred, with the reason, instead of blocking the demo.
-- **We are assuming Azure.** The plan is Azure (Container Apps, PostgreSQL Flexible Server, Blob Storage, Static Web Apps), as in `AGENTS.md` and [`infra/README.md`](../infra/README.md). Hosting is not 100% final yet. If it changes, the "How we plan to do it" column changes, but the goals stay the same.
+- **We are assuming Azure.** The plan is Azure (Container Apps, PostgreSQL Flexible Server, Blob Storage, Static Web Apps), as in `AGENTS.md` and [`infra/README.md`](../infra/README.md). Hosting is on hold: the sponsor is still deciding, and for now everything runs locally (see `AGENTS.md`, section 2). Rows that need the cloud stay "Planned" until then. If hosting changes, the "How we plan to do it" column changes, but the goals stay the same.
 - **"HIPAA-ready," never "HIPAA compliant."** The proof of concept uses only synthetic or open-source data, never real patient data. It follows practices that would help toward HIPAA later, but it is not certified for anything.
 
 ## Goals
