@@ -11,9 +11,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
+from app.db import engine
 from app.main import app
 from app.models import (
     Exercise,
@@ -225,6 +226,41 @@ def test_result_is_the_saved_analysis_result(
     assert body["result"] == (None if result is None else example(result))
 
 
+def test_status_and_result_are_read_together(client, clerk, users, history) -> None:
+    """The analysis job can save a result at any moment, also while this route reads
+    the session. The answer must then be the session before (processing, no result)
+    or after (complete, with it), never processing with a result. Here the job saves
+    right after the route's first query on the sessions table."""
+    session_id = history["squat_4"]  # processing
+    saved = []
+
+    def job_saves_now(conn, cursor, statement, parameters, context, executemany):
+        if saved or "FROM sessions" not in statement:
+            return
+        saved.append(session_id)  # first, so the job's own queries return above
+        # As the job does (app/jobs/analysis.py): the status and the result together.
+        with Session(engine) as job, job.begin():
+            job.get(ExerciseSession, session_id).status = SessionStatus.COMPLETE
+            job.add(SessionResult(session_id=session_id, result=example("squat")))
+
+    event.listen(engine, "after_cursor_execute", job_saves_now)
+    try:
+        response = get(client, clerk, "pat", "result", None, session_id)
+    finally:
+        event.remove(engine, "after_cursor_execute", job_saves_now)
+
+    assert saved == [session_id]  # the job saved during the request
+    body = response.json()
+    # Before the save or after it, never half of each. (With this route's single
+    # query, it is before.)
+    assert (body["status"], body["result"]) in [
+        ("processing", None),
+        ("complete", example("squat")),
+    ]
+    after = get(client, clerk, "pat", "result", None, session_id).json()
+    assert (after["status"], after["result"]) == ("complete", example("squat"))
+
+
 def test_result_has_the_same_fields_as_the_list(client, clerk, users, history) -> None:
     listed = get(client, clerk, "pat", "sessions", users["pat"].id, None)
     response = get(client, clerk, "pat", "result", None, history["squat_1"])
@@ -388,6 +424,25 @@ def test_a_therapist_cannot_see_their_own_patient_data(
     response = get(client, clerk, "pat", route, *ids)
 
     assert response.status_code == 404
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_a_therapist_cannot_see_a_former_patient(
+    client, clerk, db, users, history, route
+) -> None:
+    """A linked user who is no longer a patient is not shown, as for plans. Making the
+    patient a therapist (app/promote_therapist.py --force) keeps the link, but their
+    therapist, still a therapist, gets the same 404 as for an unknown id."""
+    ids = users["pat"].id, history["squat_1"]
+    assert get(client, clerk, "ther", route, *ids).status_code == 200
+    users["pat"].role = Role.THERAPIST
+    db.commit()
+
+    response = get(client, clerk, "ther", route, *ids)
+    unknown = get(client, clerk, "ther", route, uuid.uuid4(), uuid.uuid4())
+
+    assert response.status_code == 404
+    assert response.json() == unknown.json()
 
 
 @pytest.mark.parametrize("route", ROUTES)

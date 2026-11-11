@@ -27,14 +27,19 @@ def get_link(
 def can_see_patient(db: Session, user: User, patient_id: uuid.UUID) -> bool:
     """Whether this user may see this patient's sessions, results, and progress.
 
-    A patient may see only their own, and a therapist only their linked patients'.
-    The caller's role decides which rule applies. So after a role change (with
-    --force, app/promote_therapist.py keeps links, plans, and sessions), a patient
-    sees nothing through a leftover link, and a therapist no longer sees their own
-    sessions from when they were a patient.
+    A patient may see only their own, and a therapist only the users they are linked
+    to who are still patients. Both users' current roles count, because a role change
+    with --force (app/promote_therapist.py) keeps links, plans, and sessions. So a
+    patient sees nothing through a leftover link, a therapist no longer sees their own
+    sessions from when they were a patient, and a former patient's therapists no
+    longer see that history (as for plans).
     """
     if user.role == Role.PATIENT:
         return patient_id == user.id
     if user.role == Role.THERAPIST:
-        return get_link(db, user.id, patient_id) is not None
+        if get_link(db, user.id, patient_id) is None:
+            return False
+        # Linked, but the link is kept when a patient is made a therapist.
+        patient = db.get(User, patient_id)
+        return patient is not None and patient.role == Role.PATIENT
     return False

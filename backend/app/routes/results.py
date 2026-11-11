@@ -76,21 +76,24 @@ def get_session_result(
     session_id: uuid.UUID, user: CurrentUser, db: Database
 ) -> SessionResultResponse:
     """One session with its analysis result, which is null while it is processing."""
+    # The status and the result in one query, so they agree: the analysis job can
+    # save the result and the new status between two queries. LEFT OUTER JOIN gives
+    # None for the result while the session is processing.
     row = db.execute(
-        select(ExerciseSession, Exercise, Plan.patient_id)
+        select(ExerciseSession, Exercise, Plan.patient_id, SessionResult.result)
         .join(ExerciseSession.plan_exercise)
         .join(PlanExercise.plan)
         .join(PlanExercise.exercise)
+        .outerjoin(ExerciseSession.result)
         .where(ExerciseSession.id == session_id)
     ).one_or_none()
-    # Another patient's session, or an unlinked therapist: the same 404 as an unknown
-    # id, as GET /sessions/{session_id} answers.
+    # Another patient's session, an unlinked therapist, or a former patient's
+    # therapist: the same 404 as an unknown id, as GET /sessions/{session_id} answers.
     if row is None or not can_see_patient(db, user, row.patient_id):
         raise HTTPException(404, "Session not found")
-    session, exercise, _ = row
-    saved = session.result  # the SessionResult row, None while processing
+    session, exercise, _, saved = row
     # Checked against the contract on the way out, as it was before it was saved.
-    result = None if saved is None else AnalysisResult.model_validate(saved.result)
+    result = None if saved is None else AnalysisResult.model_validate(saved)
     return SessionResultResponse(**summary_fields(session, exercise), result=result)
 
 
