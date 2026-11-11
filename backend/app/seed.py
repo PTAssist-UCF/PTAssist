@@ -70,16 +70,15 @@ def seed(db: Session, patient_email: str | None = None) -> Plan:
     if link is None:
         db.add(TherapistPatient(therapist_id=therapist.id, patient_id=patient.id))
 
-    plan = db.scalar(
-        select(Plan).where(
-            Plan.therapist_id == therapist.id, Plan.patient_id == patient.id
-        )
-    )
+    # The patient's plan, whoever made it: a patient has one plan (backend/README.md,
+    # Exercise library and plans), so the seed keeps one they already have.
+    plan = db.scalar(select(Plan).where(Plan.patient_id == patient.id))
     if plan is None:
         plan = Plan(therapist_id=therapist.id, patient_id=patient.id)
         for exercise in db.scalars(select(Exercise).order_by(Exercise.name)):
             targets = DEV_TARGETS[exercise.name]
-            # Catch a mismatch here, before the plan endpoints exist to check it.
+            # The seed writes rows directly, so it checks the kind itself, as the plan
+            # endpoints do.
             if ("hold_seconds" in targets) != (exercise.kind == ExerciseKind.HOLD):
                 raise SeedError(f"DEV_TARGETS for {exercise.name} don't match its kind")
             plan.exercises.append(PlanExercise(exercise=exercise, **targets))

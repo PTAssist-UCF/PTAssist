@@ -55,6 +55,24 @@ def test_seed_can_give_the_plan_to_an_existing_patient(db: Session) -> None:
     assert db.scalar(select(User).where(User.clerk_id == PATIENT_CLERK_ID)) is None
 
 
+def test_seed_keeps_the_plan_a_patient_already_has(db: Session) -> None:
+    """A patient has one plan (backend/README.md, Exercise library and plans), so the
+    seed links its therapist but doesn't add a second plan."""
+    me = User(clerk_id="user_me", email="me@example.com", role=Role.PATIENT)
+    therapist = User(clerk_id="user_t", email="ther@example.com", role=Role.THERAPIST)
+    db.add_all([me, therapist])
+    db.flush()
+    existing = Plan(therapist_id=therapist.id, patient_id=me.id)
+    db.add(existing)
+    db.commit()
+
+    plan = seed(db, patient_email="me@example.com")
+
+    assert plan.id == existing.id
+    assert count(db, Plan) == 1
+    assert count(db, TherapistPatient) == 1  # the seed's therapist is linked to them
+
+
 @pytest.mark.parametrize(
     ("role", "email", "message"),
     [

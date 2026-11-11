@@ -91,7 +91,7 @@ python -m app.seed --patient-email you@example.com   # give the plan to your own
 
 In Docker Compose, run it in the `api` container: `docker compose exec api python -m app.seed`.
 
-The placeholder users (`therapist@example.com` and `patient@example.com`) have no Clerk account, so nobody can sign in as them. To see the plan in the web app, sign in once (which creates your user as a patient), then run the seed with `--patient-email` and your email. Running it again adds nothing new. The targets are made-up numbers for testing, not clinical advice.
+The placeholder users (`therapist@example.com` and `patient@example.com`) have no Clerk account, so nobody can sign in as them. To see the plan in the web app, sign in once (which creates your user as a patient), then run the seed with `--patient-email` and your email. Running it again adds nothing new, and a patient who already has a plan keeps it (a patient has one plan). The targets are made-up numbers for testing, not clinical advice.
 
 ## Promote a therapist
 
@@ -198,11 +198,11 @@ How the tables fit together, and why (SCRUM-43):
 
 - **The session model is `ExerciseSession`**, not `Session`, because routes also use SQLAlchemy's `Session` for the database connection. The table is still `sessions`, and the API still says "session".
 - **Exercises are rows, added by migrations.** The migration that creates `exercises` also adds the 5 exercises, so every database has them, Azure included. `name` is plain text, not a database enum, and other tables point at the exercise's `id`, so adding or renaming an exercise is a new migration that adds or changes a row. Its `name` must match the AI service's (`docs/analysis-result.md`, Exercise names).
-- **A plan exercise has either `reps` or `hold_seconds`**, never both: reps per set for exercises done in reps, a hold time for the plank. Both kinds have `sets`. One video is one set, so `sets` is how many videos to upload each time, and `times_per_week` is how many days a week (1 to 7). The database checks that exactly one target is set and that targets are positive. It can't check that the target fits the exercise's kind, so the plan endpoints must (SCRUM-63). For `side_leg_raise`, `reps` counts both sides together, like the result's `rep_count`.
+- **A plan exercise has either `reps` or `hold_seconds`**, never both: reps per set for exercises done in reps, a hold time for the plank. Both kinds have `sets`. One video is one set, so `sets` is how many videos to upload each time, and `times_per_week` is how many days a week (1 to 7). The database checks that exactly one target is set and that targets are positive. It can't check that the target fits the exercise's kind, so the plan endpoints do (see [Exercise library and plans](#exercise-library-and-plans-scrum-63)). For `side_leg_raise`, `reps` counts both sides together, like the result's `rep_count`.
 - **Ownership goes through the plan.** A session belongs to a plan exercise, which belongs to a plan, whose `patient_id` is the owner. A therapist may see it if they are linked to that patient in `therapist_patients`. The database can't check roles (they are in `users`), so routes check that the therapist in a link or plan is a therapist and the patient a patient.
 - **A session has at most one result.** `session_results.session_id` is its primary key. The failure reason is inside the JSON, not on the session (`docs/analysis-result.md`, How the backend stores it).
 - **Results are kept.** A plan exercise that has sessions can't be deleted (the foreign key refuses), so changing a plan must not delete exercises that have uploads.
-- **Each link is stored once:** the same therapist and patient can't be linked twice, and nobody can be linked to themselves. A patient may have several therapists, and several plans. Whether a patient gets only one plan at a time is decided with the plan endpoints (SCRUM-63).
+- **Each link is stored once:** the same therapist and patient can't be linked twice, and nobody can be linked to themselves. A patient may have several therapists. The database allows several plans too, but the plan endpoints give a patient one plan (see [Plan decisions](#plan-decisions)).
 
 ## Session lifecycle
 
@@ -250,7 +250,7 @@ Each route's function name becomes its operation id in the API description (`/op
 | Me | `GET /me` | Anyone signed in |
 | Exercises | `GET /exercises` | Anyone signed in |
 | Patients | `GET/POST /therapist/patients`, `DELETE /therapist/patients/{patient_id}` | Therapist |
-| Plans | `POST/PUT /plans`, `GET /plans/me` | Therapist, patient |
+| Plans | `GET/PUT /therapist/patients/{patient_id}/plan`, `GET /plans/me` | Therapist (a linked patient's), patient (their own) |
 | Sessions | `POST /sessions`, `GET /sessions/{id}`, `GET /sessions` | Patient (therapist can read linked patients') |
 | Progress | `GET /patients/{id}/progress` | Therapist |
 
@@ -270,7 +270,7 @@ A linked patient is `{"id", "email", "linked_at"}`: the patient's user id (the `
 - **Linking twice gets `409`**, also when two requests arrive at once (the database keeps one link per pair). The existing link stays as it was.
 - **An email that two patients use gets `409`.** Our copy of an email is never updated (see Sign-in), so an old user row can share its email with a newer one. The API never guesses which patient is meant; the team fixes the data.
 - **A patient can have several therapists.** Each therapist sees only their own links.
-- **Unlinking removes only the link.** A patient the caller is not linked to (an unknown id, or another therapist's patient) gets `404`, not `403`, so the answer doesn't tell who is linked to whom. Plans, sessions, and results are kept (results are never deleted). The therapist just stops seeing them, because every therapist check goes through the link, and sees them again after linking the patient again. What happens to a plan whose therapist is no longer linked (for example, whether the patient still sees it and uploads to it) is decided with the plan endpoints (SCRUM-63).
+- **Unlinking removes only the link.** A patient the caller is not linked to (an unknown id, or another therapist's patient) gets `404`, not `403`, so the answer doesn't tell who is linked to whom. Plans, sessions, and results are kept (results are never deleted). The therapist just stops seeing them, because every therapist check goes through the link, and sees them again after linking the patient again. The patient keeps their plan, and still sees it and uploads to it (see [Plan decisions](#plan-decisions)).
 
 | Status | When |
 | --- | --- |
@@ -281,6 +281,60 @@ A linked patient is `{"id", "email", "linked_at"}`: the patient's user id (the `
 | `422` | Link: the email is missing, blank, longer than 320 characters, or contains a NUL character |
 
 **Frontend handoff:** router tag `patients`; operation ids `link_patient`, `list_linked_patients`, and `unlink_patient`. Regenerate the hooks from the running API (`npm run generate:api`); the generated frontend files are left to the frontend team. To try the endpoints in `/docs`, promote your local account to therapist first (see Clerk settings). `tests/test_therapist_patients.py` covers each endpoint, including the wrong role and the wrong owner.
+
+## Exercise library and plans (SCRUM-63)
+
+A therapist builds a plan for a linked patient from the exercise library: a list of exercises, each with targets. The patient reads their plan, and uploads a video for one of its exercises with that exercise's `id` (the `plan_exercise_id` of `POST /sessions`).
+
+| Endpoint | Who | Does | Success |
+| --- | --- | --- | --- |
+| `GET /exercises` | Anyone signed in | Lists the exercise library, ordered by display name | `200` with a list |
+| `GET /therapist/patients/{patient_id}/plan` | Therapist | Reads a linked patient's plan | `200` with the plan |
+| `PUT /therapist/patients/{patient_id}/plan` | Therapist | Saves a linked patient's whole plan: creates it the first time, then replaces its exercises and targets | `201` with the plan when it was created, `200` when it was updated |
+| `GET /plans/me` | Patient | Reads the caller's own plan | `200` with the plan |
+
+An exercise is `{"id", "name", "display_name", "kind"}`. `name` is the AI service's name for it (such as `squat`), and `kind` is `reps`, or `hold` for an exercise held for time (the plank).
+
+A plan is `{"id", "patient_id", "created_at", "exercises"}`, with its exercises in the library's order. Each is `{"id", "exercise", "reps", "hold_seconds", "sets", "times_per_week"}`: `id` is the `plan_exercise_id` to upload a video with, `exercise` is the library exercise, and the targets are the ones in Data model (one of `reps` and `hold_seconds` is `null`).
+
+A save sends the whole plan, with each exercise's `id` from `GET /exercises`:
+
+```json
+{"exercises": [
+  {"exercise_id": "<the squat's id>", "reps": 10, "sets": 3, "times_per_week": 3},
+  {"exercise_id": "<the plank's id>", "hold_seconds": 30, "sets": 3, "times_per_week": 3}
+]}
+```
+
+It needs at least one exercise, each at most once, with `reps` for an exercise done in reps or `hold_seconds` for one held for time, never both. `reps` can be 1 to 100, `hold_seconds` 1 to `MAX_VIDEO_SECONDS` (120), `sets` 1 to 10, and `times_per_week` 1 to 7.
+
+| Status | When |
+| --- | --- |
+| `401` | No valid token |
+| `403` | A patient calls a therapist endpoint (even about themselves), or a therapist calls `GET /plans/me` |
+| `404` | Therapist endpoints: the caller is not linked to that patient. An unknown id, another therapist's patient, and a user who is not a patient get the same answer, `Patient not found`, so it doesn't tell who exists or who is linked to whom. Reads: there is no plan yet (a message of its own) |
+| `409` | Save: it leaves out an exercise the patient has uploaded videos for (decision 4). Nothing is saved |
+| `422` | Save: a body that breaks the rules above, an unknown `exercise_id`, or a target that doesn't fit the exercise's kind (`reps` for the plank, `hold_seconds` for the others). Therapist endpoints: a `patient_id` that is not a UUID |
+
+### Plan decisions
+
+Decided in SCRUM-63. Each one says why, and what to change if we change our minds.
+
+1. **A patient has one plan, and every therapist linked to them can see and change it.** *Why:* the patient gets one list of exercises, and two therapists share it, the same way every linked therapist already sees the patient's sessions. When a therapist unlinks, the next one takes the plan over instead of starting a second one. The plan's `therapist_id` stays the therapist who made it. The database allows several plans per patient (SCRUM-43), so the save makes sure of it: it locks the patient's row first, so a second save at the same moment waits, then updates the plan the first one made. *To change:* to give each therapist their own plan, look plans up by therapist and patient (`_find_plan` in `app/routes/plans.py`, and `app/seed.py`), and make `GET /plans/me` return a list.
+2. **Saving sends the whole plan with `PUT`, which creates it the first time.** *Why:* with one plan per patient, the plan builder sends what it shows, and doesn't need to know whether a plan exists yet. *To change:* split it into `POST` (create, `409` if there is one) and `PUT` (update, `404` if there is none).
+3. **A save changes the plan's exercises in place, matched by `exercise_id`.** An exercise that stays keeps its plan exercise `id` and gets the targets sent, a new one is added, and one left out is deleted. *Why:* a session points at its plan exercise, so an exercise that stays keeps its sessions, their results, and the patient's upload link. A plan exercise's exercise never changes, so a session always stays the exercise it was recorded for. Targets are not versioned: new targets count from the save on, and old results keep their own counts. *To change:* to keep old targets as well, add a row with the new targets instead of changing the old one, and decide which row new uploads go to.
+4. **An exercise the patient has uploaded videos for can't be left out: the save answers `409`, and nothing is saved.** Exercises without uploads are deleted. *Why:* results are kept, and the database refuses to delete a plan exercise that has sessions. Refusing is the simplest rule that loses nothing, and it needs no new column. The therapist can still change its targets. The save also locks the plan's exercises, so an upload saved at the same moment is never missed: the save waits for it, then answers `409`. *To change:* to let therapists retire such an exercise, add a nullable `removed_at` column to `plan_exercises` (a new migration). The save then sets it instead of answering `409`, the plan endpoints leave removed exercises out, `POST /sessions` refuses them, and results and progress still show them.
+5. **The plan stays with the patient after unlinking.** The patient still sees it and can upload to it (`POST /sessions` only checks that the plan is theirs). The unlinked therapist no longer sees or changes it, and a therapist linked later does (decision 1). *Why:* the patient can keep doing their exercises, and nothing is lost. *To change:* to hide a plan that no linked therapist looks after, check for a link in `GET /plans/me` and `POST /sessions`.
+6. **Targets have upper limits** (listed above). *Why:* they catch typos (100 instead of 10) and keep numbers within the database columns. One video is one set, so a hold has to fit in one clip. They are sanity checks, not clinical advice. *To change:* the constants at the top of `app/schemas/plan.py`.
+7. **No plan yet is a `404`, with a message the web app can show.** *Why:* the same as any other missing thing in the API, and the web app doesn't retry a `404`. *To change:* answer `200` with `null` instead.
+8. **Exercises are ordered by display name**, in the library and in plans. *Why:* there is no order column, and one order everywhere keeps the pages consistent. *To change:* add a position column (a new migration).
+
+**Frontend handoff:** router tags `exercises` and `plans`; operation ids `list_exercises`, `get_patient_plan`, `save_patient_plan`, and `get_my_plan` (hooks `useListExercises()`, `useGetPatientPlan()`, `useSavePatientPlan()`, and `useGetMyPlan()`). Regenerate the hooks from the running API (`npm run generate:api`); the generated frontend files are left to the frontend team.
+
+- Plan builder (SCRUM-76): load `GET /exercises` and the patient's plan (a `404` means there is none yet: start empty). Use each exercise's `kind` to ask for reps or a hold time, check the limits above, then save the whole list. A `409`, and a `422` about an exercise (unknown, or the wrong kind of target), have a sentence in `detail` to show; other `422`s have FastAPI's list of field errors.
+- My plan (SCRUM-77): `GET /plans/me` (a `404` means there is none yet). Open the upload page with an exercise's `id` as its `plan_exercise_id`.
+
+`tests/test_exercises.py` and `tests/test_plans.py` cover each endpoint, including the wrong role, an unlinked therapist, another patient's plan, each validation error, and a save at the same moment as another save or an upload.
 
 ## Video upload and session status (SCRUM-44)
 
