@@ -22,6 +22,7 @@ from app.models import (
     Plan,
     PlanExercise,
     Role,
+    TherapistPatient,
     User,
 )
 from app.schemas.plan import PlanExerciseResponse, PlanResponse, SavePlanRequest
@@ -56,6 +57,17 @@ def save_patient_plan(
 ) -> PlanResponse:
     """Save a linked patient's whole plan: create it (201), or replace its exercises and
     targets (200). An exercise the patient has uploaded videos for can't be left out."""
+    # Lock this therapist's link to the patient until the save ends, so the patient
+    # stays linked through it: an unlink waits for the save, and a save that comes
+    # during an unlink waits for it, then finds no link (404) and changes nothing.
+    db.execute(
+        select(TherapistPatient.id)
+        .where(
+            TherapistPatient.therapist_id == therapist.id,
+            TherapistPatient.patient_id == patient_id,
+        )
+        .with_for_update()
+    )
     patient = _find_linked_patient(db, therapist, patient_id)
     _check_exercises(db, body)
     # Saves for one patient run one at a time: each locks the patient's row until it

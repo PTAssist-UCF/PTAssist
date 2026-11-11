@@ -58,6 +58,17 @@ def get_owned_plan_exercise(
     return target
 
 
+def _delete_video(storage: Storage, key: str, session_id: uuid.UUID) -> None:
+    """Delete the stored video of a session that is not saved, even a partly uploaded
+    one, so no blob is left without a session."""
+    try:
+        storage.delete(key)
+    except (AzureError, OSError):
+        # Only a generated session UUID is logged. Cleanup failure must
+        # not replace the original response or expose a video URL.
+        logger.warning("Upload cleanup failed for session %s", session_id)
+
+
 @router.post("/sessions", status_code=201, response_model=SessionResponse)
 def create_session(
     target: Annotated[PlanExercise, Depends(get_owned_plan_exercise)],
@@ -79,7 +90,29 @@ def create_session(
     key = f"sessions/{session_id}{info.extension}"
     try:
         storage.upload(key, video.file, info.content_type)
-        # The session row only once the video is stored, in a short transaction.
+        # The session row only once the video is stored, in a short transaction. It
+        # checks the assignment again first: the check above ended its transaction, and
+        # a therapist may have taken the exercise out of the plan since. FOR SHARE locks
+        # it until the commit, so a plan save that would remove it waits, then sees this
+        # session and keeps it. A plan exercise never moves to another plan, so if it
+        # is still there, it is still this patient's.
+        assigned = db.scalar(
+            select(PlanExercise.id)
+            .where(PlanExercise.id == plan_exercise_id)
+            .with_for_update(read=True)
+        )
+        if assigned is None:
+            db.rollback()
+            _delete_video(storage, key, session_id)
+            # 409, not 404: the assignment was there when the upload started (the
+            # check above answers 404 before anything is stored), and a plan change
+            # made during the upload removed it. Refreshing the plan shows what is
+            # left to do.
+            raise HTTPException(
+                409,
+                "This exercise was removed from your plan while your video was "
+                "uploading, so the video wasn't saved. Please refresh your plan.",
+            )
         session = ExerciseSession(
             id=session_id,
             plan_exercise_id=plan_exercise_id,
@@ -94,12 +127,7 @@ def create_session(
         db.rollback()
         # No orphan blob: delete the video, even a partly uploaded one. No orphan row
         # either: the row is committed only after the upload succeeded.
-        try:
-            storage.delete(key)
-        except (AzureError, OSError):
-            # Only a generated session UUID is logged. Cleanup failure must
-            # not replace the original response or expose a video URL.
-            logger.warning("Upload cleanup failed for session %s", session_id)
+        _delete_video(storage, key, session_id)
         raise HTTPException(
             503, "Could not save the video. Please try again."
         ) from None

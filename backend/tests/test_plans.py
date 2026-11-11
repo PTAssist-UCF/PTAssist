@@ -7,8 +7,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
 
+import httpx
 import pytest
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
 from app.db import engine
@@ -26,6 +27,7 @@ from app.models import (
 )
 from app.schemas.analysis_contract import AnalysisResult
 from app.schemas.plan import MAX_HOLD_SECONDS, MAX_REPS, MAX_SETS
+from app.uploads import VideoInfo
 
 
 @pytest.fixture
@@ -80,6 +82,17 @@ def read(client, clerk, patient_id: uuid.UUID, user: str = "user_ther"):
 
 def my_plan(client, clerk, user: str = "user_pat"):
     return client.get("/plans/me", headers=clerk.headers(user))
+
+
+def upload(client, clerk, plan_exercise_id: str, user: str = "user_pat"):
+    """POST /sessions with a few bytes as the video. Tests that call it replace the
+    video check (validate_video), so it needs no real video, and no ffmpeg."""
+    return client.post(
+        "/sessions",
+        data={"plan_exercise_id": plan_exercise_id},
+        files={"video": ("exercise.mp4", b"synthetic video bytes", "video/mp4")},
+        headers=clerk.headers(user),
+    )
 
 
 def by_name(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -592,7 +605,7 @@ def test_no_valid_token_gets_401(client, db, users, ids, endpoint, headers) -> N
     assert count(db, Plan) == 0
 
 
-# Saves at the same time as another save, or as an upload
+# A save at the same time as another save, an unlink, or an upload
 
 
 def wait_for_a_lock() -> None:
@@ -667,6 +680,121 @@ def test_a_save_waits_for_an_upload_being_saved(client, clerk, db, users, ids) -
     assert response.status_code == 409
     assert count(db, ExerciseSession) == 1
     assert count(db, PlanExercise) == 2
+
+
+def test_a_save_that_an_unlink_beats_gets_404_and_changes_nothing(
+    client, clerk, users, ids
+) -> None:
+    """A save checks the link, then may wait for the patient's row while another save
+    holds it. An unlink that commits during that wait wins: the save answers 404 and
+    changes nothing, because it holds the link from its check until it ends."""
+    saved = save(client, clerk, users["pat"].id, [item(ids, "squat", reps=10)]).json()
+    therapist_id, patient_id = users["ther"].id, users["pat"].id
+    # The pool waits for the save when it closes, so it is opened first: the sessions
+    # close before it, giving up their locks even if the test fails.
+    with (
+        ThreadPoolExecutor(max_workers=1) as pool,
+        Session(engine) as unlink,
+        Session(engine) as other_save,
+    ):
+        # An unlink that has deleted the link but not committed yet, and another save
+        # that holds the patient's row.
+        unlink.execute(
+            delete(TherapistPatient).where(
+                TherapistPatient.therapist_id == therapist_id,
+                TherapistPatient.patient_id == patient_id,
+            )
+        )
+        other_save.execute(
+            select(User.id).where(User.id == patient_id).with_for_update()
+        )
+        waiting = pool.submit(
+            save, client, clerk, patient_id, [item(ids, "squat", reps=50)]
+        )
+        wait_for_a_lock()
+        unlink.commit()
+        other_save.rollback()
+        response = waiting.result(timeout=10)
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Patient not found"
+    assert my_plan(client, clerk).json() == saved
+
+
+def test_an_upload_whose_exercise_was_removed_meanwhile_gets_409(
+    client, clerk, db, users, ids, storage, monkeypatch, ai_service
+) -> None:
+    """An upload checks the exercise, then lets go of the database while it checks and
+    stores the video. Meanwhile a save leaves the exercise out, and deletes it (it has
+    no uploads yet). The upload then finds it gone: it deletes the stored video and
+    answers 409, asking the patient to refresh their plan."""
+    plan = save(
+        client,
+        clerk,
+        users["pat"].id,
+        [item(ids, "squat", reps=10), item(ids, "plank", hold_seconds=30)],
+    ).json()
+    squat_id = by_name(plan)["squat"]["id"]
+    keys = []
+    store = storage.upload
+
+    def check_while_a_save_removes_the_squat(video) -> VideoInfo:
+        # What a save that leaves the squat out does, committed during the check.
+        with Session(engine) as other:
+            other.execute(
+                delete(PlanExercise).where(PlanExercise.id == uuid.UUID(squat_id))
+            )
+            other.commit()
+        return VideoInfo(".mp4", "video/mp4")
+
+    def remember(key, data, content_type) -> None:
+        keys.append(key)
+        store(key, data, content_type)
+
+    monkeypatch.setattr(
+        "app.routes.sessions.validate_video", check_while_a_save_removes_the_squat
+    )
+    monkeypatch.setattr(storage, "upload", remember)
+
+    response = upload(client, clerk, squat_id)
+
+    assert response.status_code == 409
+    assert "refresh your plan" in response.json()["detail"]
+    assert count(db, ExerciseSession) == 0
+    [key] = keys
+    assert httpx.get(storage.read_url(key)).status_code == 404  # the video is deleted
+    assert ai_service.requests == []  # nothing to analyze
+
+
+def test_an_upload_waits_for_a_save_removing_its_exercise(
+    client, clerk, db, users, ids, storage, monkeypatch
+) -> None:
+    """Before it saves its session, an upload checks the exercise again and locks it.
+    If a save is removing the exercise right then, the upload waits for the save, then
+    finds the exercise gone and answers 409, instead of failing with a 503."""
+    plan = save(
+        client,
+        clerk,
+        users["pat"].id,
+        [item(ids, "squat", reps=10), item(ids, "plank", hold_seconds=30)],
+    ).json()
+    squat_id = by_name(plan)["squat"]["id"]
+    monkeypatch.setattr(
+        "app.routes.sessions.validate_video",
+        lambda video: VideoInfo(".mp4", "video/mp4"),
+    )
+    with ThreadPoolExecutor(max_workers=1) as pool, Session(engine) as removing:
+        # A save that leaves the squat out has deleted it, but not committed yet.
+        removing.execute(
+            delete(PlanExercise).where(PlanExercise.id == uuid.UUID(squat_id))
+        )
+        waiting = pool.submit(upload, client, clerk, squat_id)
+        wait_for_a_lock()
+        removing.commit()
+        response = waiting.result(timeout=10)
+
+    assert response.status_code == 409
+    assert count(db, ExerciseSession) == 0
 
 
 def test_openapi_names_the_frontend_hooks() -> None:

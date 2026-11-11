@@ -323,8 +323,8 @@ Decided in SCRUM-63. Each one says why, and what to change if we change our mind
 1. **A patient has one plan, and every therapist linked to them can see and change it.** *Why:* the patient gets one list of exercises, and two therapists share it, the same way every linked therapist already sees the patient's sessions. When a therapist unlinks, the next one takes the plan over instead of starting a second one. The plan's `therapist_id` stays the therapist who made it. The database allows several plans per patient (SCRUM-43), so the save makes sure of it: it locks the patient's row first, so a second save at the same moment waits, then updates the plan the first one made. *To change:* to give each therapist their own plan, look plans up by therapist and patient (`_find_plan` in `app/routes/plans.py`, and `app/seed.py`), and make `GET /plans/me` return a list.
 2. **Saving sends the whole plan with `PUT`, which creates it the first time.** *Why:* with one plan per patient, the plan builder sends what it shows, and doesn't need to know whether a plan exists yet. *To change:* split it into `POST` (create, `409` if there is one) and `PUT` (update, `404` if there is none).
 3. **A save changes the plan's exercises in place, matched by `exercise_id`.** An exercise that stays keeps its plan exercise `id` and gets the targets sent, a new one is added, and one left out is deleted. *Why:* a session points at its plan exercise, so an exercise that stays keeps its sessions, their results, and the patient's upload link. A plan exercise's exercise never changes, so a session always stays the exercise it was recorded for. Targets are not versioned: new targets count from the save on, and old results keep their own counts. *To change:* to keep old targets as well, add a row with the new targets instead of changing the old one, and decide which row new uploads go to.
-4. **An exercise the patient has uploaded videos for can't be left out: the save answers `409`, and nothing is saved.** Exercises without uploads are deleted. *Why:* results are kept, and the database refuses to delete a plan exercise that has sessions. Refusing is the simplest rule that loses nothing, and it needs no new column. The therapist can still change its targets. The save also locks the plan's exercises, so an upload saved at the same moment is never missed: the save waits for it, then answers `409`. *To change:* to let therapists retire such an exercise, add a nullable `removed_at` column to `plan_exercises` (a new migration). The save then sets it instead of answering `409`, the plan endpoints leave removed exercises out, `POST /sessions` refuses them, and results and progress still show them.
-5. **The plan stays with the patient after unlinking.** The patient still sees it and can upload to it (`POST /sessions` only checks that the plan is theirs). The unlinked therapist no longer sees or changes it, and a therapist linked later does (decision 1). *Why:* the patient can keep doing their exercises, and nothing is lost. *To change:* to hide a plan that no linked therapist looks after, check for a link in `GET /plans/me` and `POST /sessions`.
+4. **An exercise the patient has uploaded videos for can't be left out: the save answers `409`, and nothing is saved.** Exercises without uploads are deleted. *Why:* results are kept, and the database refuses to delete a plan exercise that has sessions. Refusing is the simplest rule that loses nothing, and it needs no new column. The therapist can still change its targets. A save and an upload at the same moment can't miss each other. The save locks the plan's exercises, so an upload that is saving its session right then is waited for, and the save then answers `409`. The other way round, an upload checks its exercise again, with a lock, just before it saves its session: if a save removed the exercise while the video was being stored, the upload deletes the video and answers `409`, asking the patient to refresh their plan (see [Video upload and session status](#video-upload-and-session-status-scrum-44)). *To change:* to let therapists retire such an exercise, add a nullable `removed_at` column to `plan_exercises` (a new migration). The save then sets it instead of answering `409`, the plan endpoints leave removed exercises out, `POST /sessions` refuses them, and results and progress still show them.
+5. **The plan stays with the patient after unlinking.** The patient still sees it and can upload to it (`POST /sessions` only checks that the plan is theirs). The unlinked therapist no longer sees or changes it, and a therapist linked later does (decision 1). A save locks the therapist's link until it ends, so the patient stays linked through the save: an unlink waits for a save under way, and a save that comes during an unlink answers `404` and changes nothing. *Why:* the patient can keep doing their exercises, and nothing is lost. *To change:* to hide a plan that no linked therapist looks after, check for a link in `GET /plans/me` and `POST /sessions`.
 6. **Targets have upper limits** (listed above). *Why:* they catch typos (100 instead of 10) and keep numbers within the database columns. One video is one set, so a hold has to fit in one clip. They are sanity checks, not clinical advice. *To change:* the constants at the top of `app/schemas/plan.py`.
 7. **No plan yet is a `404`, with a message the web app can show.** *Why:* the same as any other missing thing in the API, and the web app doesn't retry a `404`. *To change:* answer `200` with `null` instead.
 8. **Exercises are ordered by display name**, in the library and in plans. *Why:* there is no order column, and one order everywhere keeps the pages consistent. *To change:* add a position column (a new migration).
@@ -332,9 +332,9 @@ Decided in SCRUM-63. Each one says why, and what to change if we change our mind
 **Frontend handoff:** router tags `exercises` and `plans`; operation ids `list_exercises`, `get_patient_plan`, `save_patient_plan`, and `get_my_plan` (hooks `useListExercises()`, `useGetPatientPlan()`, `useSavePatientPlan()`, and `useGetMyPlan()`). Regenerate the hooks from the running API (`npm run generate:api`); the generated frontend files are left to the frontend team.
 
 - Plan builder (SCRUM-76): load `GET /exercises` and the patient's plan (a `404` means there is none yet: start empty). Use each exercise's `kind` to ask for reps or a hold time, check the limits above, then save the whole list. A `409`, and a `422` about an exercise (unknown, or the wrong kind of target), have a sentence in `detail` to show; other `422`s have FastAPI's list of field errors.
-- My plan (SCRUM-77): `GET /plans/me` (a `404` means there is none yet). Open the upload page with an exercise's `id` as its `plan_exercise_id`.
+- My plan (SCRUM-77): `GET /plans/me` (a `404` means there is none yet). Open the upload page with an exercise's `id` as its `plan_exercise_id`. An upload answers `409` if a therapist took the exercise out of the plan while it was uploading: show its `detail`, and load the plan again.
 
-`tests/test_exercises.py` and `tests/test_plans.py` cover each endpoint, including the wrong role, an unlinked therapist, another patient's plan, each validation error, and a save at the same moment as another save or an upload.
+`tests/test_exercises.py` and `tests/test_plans.py` cover each endpoint, including the wrong role, an unlinked therapist, another patient's plan, and each validation error. They also cover a save at the same moment as another save, an unlink, or an upload (in both orders).
 
 ## Video upload and session status (SCRUM-44)
 
@@ -383,6 +383,7 @@ decoding or pose analysis; the AI service retains its own input checks.
 | `401` | Missing or invalid Clerk token |
 | `403` | The signed-in user cannot upload in their role |
 | `404` | Assignment is missing or not owned by this patient |
+| `409` | A therapist took the exercise out of the plan while the video was uploading. The stored video is deleted, and the message asks the patient to refresh their plan |
 | `413` | File exceeds `MAX_VIDEO_UPLOAD_BYTES` |
 | `415` | Unsupported declared type/extension or inspected format mismatch |
 | `422` | Invalid form, empty/unreadable media, no video, or duration outside the shared limits |
@@ -392,7 +393,16 @@ Rejected videos do not create a session or call `storage.upload`. The route hold
 database connection while it checks and stores the video, which can take minutes: it
 ends the transaction of the sign-in and ownership checks first (otherwise a few slow
 uploads would use up the connection pool), uploads the blob, and only then inserts
-and commits the session in a short transaction. If uploading or committing the
+and commits the session in a short transaction. That transaction first checks the
+assignment again and locks it (`FOR SHARE`), because a therapist may have taken the
+exercise out of the plan while the video was stored (SCRUM-63). If it is gone, the
+blob is deleted and the answer is `409`, asking the patient to refresh their plan:
+not `404`, because the assignment was there when the upload started, and a plan
+change made during the upload removed it. The lock keeps a plan save from removing
+the exercise until the session is committed; the save then sees the session and
+keeps the exercise (see [Plan decisions](#plan-decisions), decision 4).
+
+If uploading or committing the
 session fails, the transaction is rolled back and blob deletion is attempted,
 including for a partially uploaded blob, so no blob is left without a session and no
 session without its video. Cleanup failure is logged using
