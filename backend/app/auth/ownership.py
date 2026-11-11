@@ -9,7 +9,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import TherapistPatient
+from app.models import Role, TherapistPatient, User
 
 
 def get_link(
@@ -22,3 +22,19 @@ def get_link(
             TherapistPatient.patient_id == patient_id,
         )
     )
+
+
+def can_see_patient(db: Session, user: User, patient_id: uuid.UUID) -> bool:
+    """Whether this user may see this patient's sessions, results, and progress.
+
+    A patient may see only their own, and a therapist only their linked patients'.
+    The caller's role decides which rule applies. So after a role change (with
+    --force, app/promote_therapist.py keeps links, plans, and sessions), a patient
+    sees nothing through a leftover link, and a therapist no longer sees their own
+    sessions from when they were a patient.
+    """
+    if user.role == Role.PATIENT:
+        return patient_id == user.id
+    if user.role == Role.THERAPIST:
+        return get_link(db, user.id, patient_id) is not None
+    return False
