@@ -12,7 +12,7 @@ import AuthLoading from '@/components/AuthLoading';
 export default function SignInPage() {
   return (
     <Center mih="100vh" p="md">
-      <SignIn routing="path" path="/sign-in" fallback={<AuthLoading />} />
+      <SignIn routing="path" path="/sign-in" fallbackRedirectUrl="/" fallback={<AuthLoading />} />
     </Center>
   );
 }
