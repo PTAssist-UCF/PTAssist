@@ -130,9 +130,20 @@ const { data: me, isLoading, error } = useGetMe();
 - **Tests:** `src/apiClient.test.tsx` shows how to test a hook against a fake API, with no backend running. `src/App.test.tsx` does the same for whole pages, with a fake Clerk.
 - **Status polling:** `useSessionStatus(sessionId)` in `src/hooks/` wraps `useGetSession` and polls every 3 seconds. It stops when the session is `complete` or `failed`, or on an error such as 404. After `POLL_TIMEOUT_MS` it stops and returns `timedOut: true`, so the page can show a message. The timeout must stay at least as long as the backend's stuck-session cutoff (SCRUM-66); see [Clip limits and timing](../docs/analysis-result.md#clip-limits-and-timing).
 
+## My plan
+
+(SCRUM-77) The patient's home page, `/patient` (`src/pages/patient/PatientPage.tsx`), shows their plan from `GET /plans/me` (`useGetMyPlan()`): one card per exercise with its targets (sets and reps, or sets and a hold time for the plank) and how many times a week, and a **Record / Upload** button.
+
+- **The button opens `/patient/upload?plan_exercise_id=<id>`**, with the plan exercise's `id`: the `plan_exercise_id` that `POST /sessions` takes.
+- **No plan yet:** `GET /plans/me` answers `404`, and the page says the therapist hasn't assigned a plan yet. Other errors show the API's answer and a **Try again** button.
+- **The upload page looks the id up in the plan** and shows the exercise's name and targets; there is no field to type an id. Opened without an id (the **Upload Video** link in the navigation), or with one that isn't in the plan, it lists the plan's exercises to choose from. So it only ever sends an id from the patient's plan.
+- **An exercise taken out of the plan during an upload:** `POST /sessions` answers `409` and doesn't keep the video. The page shows the API's message and loads the plan again, so the patient can choose from what is left.
+- **Illustrations and instructions** for each exercise are in `src/pages/patient/exerciseInfo.ts`, by the exercise's name in the API. They are static, not plan data, and an exercise without an entry shows without them.
+- No progress yet: the page shows only what the plan holds. Progress (`GET /patients/{id}/progress`) is SCRUM-96.
+
 ## Upload and results
 
-1. (SCRUM-58) The patient picks a file or records a video on a phone browser (`UploadPage.tsx`) for an assigned exercise, validated on the client for format (MP4/MOV/WebM), size (≤ 1 GiB), and duration (3s–120s) before upload with a progress bar (`uploadWithProgress`).
+1. (SCRUM-58) The patient picks a file or records a video on a phone browser (`UploadPage.tsx`) for an exercise of their plan (see My plan), validated on the client for format (MP4/MOV/WebM), size (≤ 1 GiB), and duration (3s–120s) before upload with a progress bar (`uploadWithProgress`).
 2. The session starts as `processing`. The page polls the status every few seconds, and gives up after a timeout at least as long as the backend's cutoff for sessions stuck in `processing` (SCRUM-66), so it never gives up before the backend does (see [Clip limits and timing](../docs/analysis-result.md#clip-limits-and-timing)).
 3. On `complete`, show `rep_count` (or `hold_seconds` for a hold exercise such as the plank), the form score, and feedback. On `failed`, show `error_message`, and offer a re-upload unless `error_code` is `unknown_exercise` (uploading again would fail the same way).
 

@@ -1,11 +1,10 @@
 import { useState, useRef, useEffect, type ChangeEvent, type DragEvent } from 'react';
-import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Container,
   Title,
   Text,
   Paper,
-  TextInput,
   Button,
   Group,
   Stack,
@@ -17,10 +16,12 @@ import {
   SimpleGrid,
   List,
   ThemeIcon,
+  NavLink,
 } from '@mantine/core';
 
 import { uploadWithProgress, ApiError } from '@/apiClient';
-import type { SessionResponse } from '@/api/model';
+import { useGetMyPlan } from '@/api/plans';
+import type { PlanExerciseResponse, SessionResponse } from '@/api/model';
 import {
   checkFileConstraints,
   checkDurationConstraints,
@@ -30,21 +31,29 @@ import {
   MIN_VIDEO_SECONDS,
   MAX_VIDEO_SECONDS,
 } from '@/utils/videoValidation';
+import PlanStatus from './PlanStatus';
+import { describeFrequency, describeTarget, uploadPath } from './planDisplay';
+
+// Shown for a 409 whose answer has no message of its own.
+const REMOVED_FROM_PLAN =
+  "This exercise was removed from your plan while your video was uploading, so the video wasn't saved. Please choose an exercise from your plan.";
 
 export default function UploadPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const location = useLocation();
 
-  // Prepopulate plan_exercise_id from search params (?plan_exercise_id=...) or router state
-  const initialPlanExerciseId =
-    searchParams.get('plan_exercise_id') ||
-    searchParams.get('exerciseId') ||
-    (location.state as { planExerciseId?: string } | null)?.planExerciseId ||
-    '';
-
-  const [planExerciseId, setPlanExerciseId] = useState(initialPlanExerciseId);
-  const [planExerciseError, setPlanExerciseError] = useState<string | null>(null);
+  // The exercise this video is for: the plan exercise id that the Record / Upload buttons
+  // on My Plan put in the address. It is looked up in the patient's plan, so the page
+  // shows the exercise's name, and only ever sends an id from the plan.
+  const planExerciseId = searchParams.get('plan_exercise_id');
+  const {
+    data: plan,
+    isPending: isPlanPending,
+    isFetching: isPlanFetching,
+    error: planError,
+    refetch: refetchPlan,
+  } = useGetMyPlan();
+  const exercise = plan?.exercises.find((item) => item.id === planExerciseId);
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -172,11 +181,10 @@ export default function UploadPage() {
   const handleSubmit = async () => {
     setUploadError(null);
 
-    if (!planExerciseId.trim()) {
-      setPlanExerciseError('Please enter a Plan Exercise ID.');
+    // The upload form only shows for an exercise of the plan, so this always holds.
+    if (!exercise) {
       return;
     }
-    setPlanExerciseError(null);
 
     if (!selectedFile) {
       setValidationError('Please select or record a video first.');
@@ -188,7 +196,7 @@ export default function UploadPage() {
     }
 
     const formData = new FormData();
-    formData.append('plan_exercise_id', planExerciseId.trim());
+    formData.append('plan_exercise_id', exercise.id);
     formData.append('video', selectedFile);
 
     const abortController = new AbortController();
@@ -225,6 +233,14 @@ export default function UploadPage() {
       }
       if (err instanceof ApiError) {
         const detail = (err.body as { detail?: string } | undefined)?.detail;
+        if (err.status === 409) {
+          // A therapist took this exercise out of the plan while the video was uploading,
+          // so the API didn't keep the video. Load the plan again: the exercise then
+          // leaves this page, which offers the exercises that are left.
+          void refetchPlan();
+          setUploadError(typeof detail === 'string' ? detail : REMOVED_FROM_PLAN);
+          return;
+        }
         setUploadError(
           typeof detail === 'string'
             ? detail
@@ -275,203 +291,248 @@ export default function UploadPage() {
         )}
 
         <Paper withBorder p="lg" radius="md">
-          <Stack gap="md">
-            <TextInput
-              label="Plan Exercise ID"
-              placeholder="e.g. 123e4567-e89b-12d3-a456-426614174000"
-              description="The identifier of your assigned exercise. Auto-filled when starting from My Plan."
-              value={planExerciseId}
-              onChange={(e) => {
-                setPlanExerciseId(e.currentTarget.value);
-                if (planExerciseError) setPlanExerciseError(null);
-              }}
-              error={planExerciseError}
-              disabled={isUploading || !!createdSession}
-              required
-            />
-
-            {/* Hidden file inputs for Camera recording & File picking */}
-            <input
-              type="file"
-              ref={cameraInputRef}
-              accept="video/mp4,video/quicktime,video/webm"
-              capture="environment"
-              style={{ display: 'none' }}
-              onChange={handleFileChange}
-              data-testid="camera-input"
-            />
-            <input
-              type="file"
-              ref={fileInputRef}
-              accept="video/mp4,video/quicktime,video/webm"
-              style={{ display: 'none' }}
-              onChange={handleFileChange}
-              data-testid="file-input"
-            />
-
-            {!selectedFile ? (
+          {!exercise ? (
+            // No exercise of the plan in the address: opened from the Upload Video link in
+            // the navigation, an old link, or the exercise just left the plan (409).
+            <Stack gap="md">
+              {uploadError && (
+                <Alert color="red" title="Upload failed">
+                  {uploadError}
+                </Alert>
+              )}
+              {plan && plan.exercises.length > 0 ? (
+                <ChooseExercise
+                  exercises={plan.exercises}
+                  notInPlan={!!planExerciseId && !uploadError}
+                  // A fresh start for the chosen exercise: no video or message from before.
+                  onChoose={handleClearFile}
+                />
+              ) : (
+                // Loading, no plan yet (404), or an error.
+                <PlanStatus
+                  isPending={isPlanPending}
+                  isFetching={isPlanFetching}
+                  error={planError}
+                  onRetry={() => void refetchPlan()}
+                />
+              )}
+              <Group justify="flex-end">
+                <Button variant="default" onClick={() => navigate('/patient')}>
+                  Back to Plan
+                </Button>
+              </Group>
+            </Stack>
+          ) : (
+            <Stack gap="md">
+              {/* Which exercise this video is for, looked up in the plan. */}
               <Box>
-                <Text size="sm" fw={500} mb="xs">
-                  Exercise Recording
+                <Text size="sm" fw={500} c="dimmed">
+                  Exercise
                 </Text>
-                <Paper
-                  withBorder
-                  p="xl"
-                  radius="md"
-                  style={{
-                    borderStyle: 'dashed',
-                    backgroundColor: isDragOver ? 'var(--mantine-color-teal-0)' : undefined,
-                    borderColor: isDragOver ? 'var(--mantine-color-teal-5)' : undefined,
-                    textAlign: 'center',
-                  }}
-                  onDragOver={handleDragOver}
-                  onDragLeave={handleDragLeave}
-                  onDrop={handleDrop}
-                >
-                  <Stack align="center" gap="md">
-                    <Text size="sm" c="dimmed">
-                      Record a new video using your camera, pick a recorded clip from your phone, or
-                      drag and drop a file here.
-                    </Text>
-
-                    <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm" w="100%" maw={400}>
-                      <Button
-                        color="teal"
-                        size="md"
-                        radius="md"
-                        onClick={() => cameraInputRef.current?.click()}
-                        disabled={isUploading || !!createdSession}
-                      >
-                        Record with Camera
-                      </Button>
-                      <Button
-                        variant="default"
-                        size="md"
-                        radius="md"
-                        onClick={() => fileInputRef.current?.click()}
-                        disabled={isUploading || !!createdSession}
-                      >
-                        Choose Video File
-                      </Button>
-                    </SimpleGrid>
-
-                    <Text size="xs" c="dimmed">
-                      Accepted formats: MP4, MOV, WebM • Length: {MIN_VIDEO_SECONDS}s to{' '}
-                      {MAX_VIDEO_SECONDS / 60}m • Max size: 1 GiB
-                    </Text>
-                  </Stack>
-                </Paper>
+                <Title order={2} size="h3">
+                  {exercise.exercise.display_name}
+                </Title>
+                <Group gap="xs" mt={4}>
+                  <Badge color="teal" variant="light">
+                    {describeTarget(exercise)}
+                  </Badge>
+                  <Badge color="gray" variant="light">
+                    {describeFrequency(exercise.times_per_week)}
+                  </Badge>
+                </Group>
+                <Text size="xs" c="dimmed" mt={4}>
+                  Each video is one set.
+                </Text>
               </Box>
-            ) : (
-              <Card withBorder radius="md" p="md">
-                <Stack gap="sm">
-                  <Group justify="space-between" align="center">
-                    <div>
-                      <Text fw={600} size="sm">
-                        {selectedFile.name}
+
+              {/* Hidden file inputs for Camera recording & File picking */}
+              <input
+                type="file"
+                ref={cameraInputRef}
+                accept="video/mp4,video/quicktime,video/webm"
+                capture="environment"
+                style={{ display: 'none' }}
+                onChange={handleFileChange}
+                data-testid="camera-input"
+              />
+              <input
+                type="file"
+                ref={fileInputRef}
+                accept="video/mp4,video/quicktime,video/webm"
+                style={{ display: 'none' }}
+                onChange={handleFileChange}
+                data-testid="file-input"
+              />
+
+              {!selectedFile ? (
+                <Box>
+                  <Text size="sm" fw={500} mb="xs">
+                    Exercise Recording
+                  </Text>
+                  <Paper
+                    withBorder
+                    p="xl"
+                    radius="md"
+                    style={{
+                      borderStyle: 'dashed',
+                      backgroundColor: isDragOver ? 'var(--mantine-color-teal-0)' : undefined,
+                      borderColor: isDragOver ? 'var(--mantine-color-teal-5)' : undefined,
+                      textAlign: 'center',
+                    }}
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                  >
+                    <Stack align="center" gap="md">
+                      <Text size="sm" c="dimmed">
+                        Record a new video using your camera, pick a recorded clip from your phone,
+                        or drag and drop a file here.
                       </Text>
-                      <Group gap="xs" mt={4}>
-                        <Badge size="sm" variant="light" color="gray">
-                          {formatFileSize(selectedFile.size)}
-                        </Badge>
-                        {isCheckingDuration ? (
-                          <Badge size="sm" variant="outline" color="blue">
-                            Checking length...
-                          </Badge>
-                        ) : videoDuration !== null ? (
-                          <Badge
-                            size="sm"
-                            variant="light"
-                            color={
-                              videoDuration < MIN_VIDEO_SECONDS || videoDuration > MAX_VIDEO_SECONDS
-                                ? 'red'
-                                : 'teal'
-                            }
-                          >
-                            Duration: {formatDuration(videoDuration)}
-                          </Badge>
-                        ) : null}
-                      </Group>
-                    </div>
 
-                    {!isUploading && !createdSession && (
-                      <Button variant="subtle" color="red" size="xs" onClick={handleClearFile}>
-                        Change video
-                      </Button>
+                      <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm" w="100%" maw={400}>
+                        <Button
+                          color="teal"
+                          size="md"
+                          radius="md"
+                          onClick={() => cameraInputRef.current?.click()}
+                          disabled={isUploading || !!createdSession}
+                        >
+                          Record with Camera
+                        </Button>
+                        <Button
+                          variant="default"
+                          size="md"
+                          radius="md"
+                          onClick={() => fileInputRef.current?.click()}
+                          disabled={isUploading || !!createdSession}
+                        >
+                          Choose Video File
+                        </Button>
+                      </SimpleGrid>
+
+                      <Text size="xs" c="dimmed">
+                        Accepted formats: MP4, MOV, WebM • Length: {MIN_VIDEO_SECONDS}s to{' '}
+                        {MAX_VIDEO_SECONDS / 60}m • Max size: 1 GiB
+                      </Text>
+                    </Stack>
+                  </Paper>
+                </Box>
+              ) : (
+                <Card withBorder radius="md" p="md">
+                  <Stack gap="sm">
+                    <Group justify="space-between" align="center">
+                      <div>
+                        <Text fw={600} size="sm">
+                          {selectedFile.name}
+                        </Text>
+                        <Group gap="xs" mt={4}>
+                          <Badge size="sm" variant="light" color="gray">
+                            {formatFileSize(selectedFile.size)}
+                          </Badge>
+                          {isCheckingDuration ? (
+                            <Badge size="sm" variant="outline" color="blue">
+                              Checking length...
+                            </Badge>
+                          ) : videoDuration !== null ? (
+                            <Badge
+                              size="sm"
+                              variant="light"
+                              color={
+                                videoDuration < MIN_VIDEO_SECONDS ||
+                                videoDuration > MAX_VIDEO_SECONDS
+                                  ? 'red'
+                                  : 'teal'
+                              }
+                            >
+                              Duration: {formatDuration(videoDuration)}
+                            </Badge>
+                          ) : null}
+                        </Group>
+                      </div>
+
+                      {!isUploading && !createdSession && (
+                        <Button variant="subtle" color="red" size="xs" onClick={handleClearFile}>
+                          Change video
+                        </Button>
+                      )}
+                    </Group>
+
+                    {previewUrl && (
+                      <Box mt="xs">
+                        <video
+                          src={previewUrl}
+                          controls
+                          style={{
+                            width: '100%',
+                            maxHeight: '300px',
+                            borderRadius: '8px',
+                            backgroundColor: '#000',
+                          }}
+                        />
+                      </Box>
                     )}
-                  </Group>
+                  </Stack>
+                </Card>
+              )}
 
-                  {previewUrl && (
-                    <Box mt="xs">
-                      <video
-                        src={previewUrl}
-                        controls
-                        style={{
-                          width: '100%',
-                          maxHeight: '300px',
-                          borderRadius: '8px',
-                          backgroundColor: '#000',
-                        }}
-                      />
-                    </Box>
-                  )}
-                </Stack>
-              </Card>
-            )}
+              {validationError && (
+                <Alert color="red" title="Cannot upload video">
+                  {validationError}
+                </Alert>
+              )}
 
-            {validationError && (
-              <Alert color="red" title="Cannot upload video">
-                {validationError}
-              </Alert>
-            )}
+              {uploadError && (
+                <Alert color="red" title="Upload failed">
+                  {uploadError}
+                </Alert>
+              )}
 
-            {uploadError && (
-              <Alert color="red" title="Upload failed">
-                {uploadError}
-              </Alert>
-            )}
+              {isUploading && (
+                <Card withBorder radius="md" p="md" bg="gray.0">
+                  <Stack gap="xs">
+                    <Group justify="space-between">
+                      <Text size="sm" fw={500}>
+                        Uploading video...
+                      </Text>
+                      <Text size="sm" fw={600}>
+                        {uploadProgress}%
+                      </Text>
+                    </Group>
+                    <Progress value={uploadProgress} animated size="lg" radius="xl" color="teal" />
+                    <Group justify="flex-end" mt="xs">
+                      <Button variant="default" size="xs" color="red" onClick={handleCancelUpload}>
+                        Cancel Upload
+                      </Button>
+                    </Group>
+                  </Stack>
+                </Card>
+              )}
 
-            {isUploading && (
-              <Card withBorder radius="md" p="md" bg="gray.0">
-                <Stack gap="xs">
-                  <Group justify="space-between">
-                    <Text size="sm" fw={500}>
-                      Uploading video...
-                    </Text>
-                    <Text size="sm" fw={600}>
-                      {uploadProgress}%
-                    </Text>
-                  </Group>
-                  <Progress value={uploadProgress} animated size="lg" radius="xl" color="teal" />
-                  <Group justify="flex-end" mt="xs">
-                    <Button variant="default" size="xs" color="red" onClick={handleCancelUpload}>
-                      Cancel Upload
-                    </Button>
-                  </Group>
-                </Stack>
-              </Card>
-            )}
-
-            <Group justify="flex-end" mt="sm">
-              <Button variant="default" disabled={isUploading} onClick={() => navigate('/patient')}>
-                Back to Plan
-              </Button>
-              <Button
-                color="teal"
-                disabled={
-                  !selectedFile ||
-                  isCheckingDuration ||
-                  !!validationError ||
-                  isUploading ||
-                  !!createdSession
-                }
-                loading={isUploading}
-                onClick={handleSubmit}
-              >
-                Upload Video
-              </Button>
-            </Group>
-          </Stack>
+              <Group justify="flex-end" mt="sm">
+                <Button
+                  variant="default"
+                  disabled={isUploading}
+                  onClick={() => navigate('/patient')}
+                >
+                  Back to Plan
+                </Button>
+                <Button
+                  color="teal"
+                  disabled={
+                    !selectedFile ||
+                    isCheckingDuration ||
+                    !!validationError ||
+                    isUploading ||
+                    !!createdSession
+                  }
+                  loading={isUploading}
+                  onClick={handleSubmit}
+                >
+                  Upload Video
+                </Button>
+              </Group>
+            </Stack>
+          )}
         </Paper>
 
         <Paper withBorder p="md" radius="md">
@@ -534,5 +595,42 @@ export default function UploadPage() {
         </Paper>
       </Stack>
     </Container>
+  );
+}
+
+/**
+ * The plan's exercises to choose from, each a link that opens this page for it.
+ * notInPlan: the address named an exercise that isn't in the plan (any more).
+ */
+function ChooseExercise({
+  exercises,
+  notInPlan,
+  onChoose,
+}: {
+  exercises: PlanExerciseResponse[];
+  notInPlan: boolean;
+  onChoose: () => void;
+}) {
+  return (
+    <Stack gap="sm">
+      {notInPlan && (
+        <Alert color="yellow" title="This exercise isn't in your plan">
+          Your therapist may have changed your plan. Choose one of its exercises below.
+        </Alert>
+      )}
+      <Text fw={500}>Which exercise is this video for?</Text>
+      <Paper withBorder radius="md">
+        {exercises.map((item) => (
+          <NavLink
+            key={item.id}
+            component={Link}
+            to={uploadPath(item.id)}
+            label={item.exercise.display_name}
+            description={describeTarget(item)}
+            onClick={onChoose}
+          />
+        ))}
+      </Paper>
+    </Stack>
   );
 }
