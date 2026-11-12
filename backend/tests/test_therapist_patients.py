@@ -295,11 +295,13 @@ def test_openapi_names_the_frontend_hooks() -> None:
     """The frontend's generated hooks are named after these: useLinkPatient(), etc."""
     paths = app.openapi()["paths"]
 
+    # By tag, not by path: the plan routes (tag "plans") also start with
+    # /therapist/patients.
     operations = {
         operation["operationId"]: (method.upper(), path, operation["tags"])
         for path, item in paths.items()
-        if path.startswith("/therapist/patients")
         for method, operation in item.items()
+        if "patients" in operation["tags"]
     }
 
     assert operations == {

@@ -7,7 +7,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRoute
 
 from app.config import CLERK_AUTHORIZED_PARTIES, CLERK_SECRET_KEY
-from app.routes import health, me, results, sessions, therapist_patients
+from app.routes import (
+    exercises,
+    health,
+    me,
+    plans,
+    results,
+    sessions,
+    therapist_patients,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +55,10 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
+app.include_router(exercises.router)
 app.include_router(health.router)
 app.include_router(me.router)
+app.include_router(plans.router)
 app.include_router(results.router)
 app.include_router(sessions.router)
 app.include_router(therapist_patients.router)
