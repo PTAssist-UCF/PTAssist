@@ -5,14 +5,31 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from './analysisResult';
+export * from './analysisResultErrorCode';
+export * from './analysisResultStatus';
 export * from './bodyCreateSession';
+export * from './exerciseKind';
+export * from './exerciseProgress';
+export * from './exerciseResponse';
 export * from './healthResponse';
 export * from './hTTPValidationError';
+export * from './issue';
 export * from './linkedPatientResponse';
 export * from './linkPatientRequest';
 export * from './meResponse';
+export * from './planExerciseRequest';
+export * from './planExerciseResponse';
+export * from './planResponse';
+export * from './progressPoint';
+export * from './repResult';
+export * from './repResultMetrics';
+export * from './repResultSide';
 export * from './role';
+export * from './savePlanRequest';
 export * from './sessionResponse';
+export * from './sessionResultResponse';
 export * from './sessionStatus';
+export * from './sessionSummary';
 export * from './validationError';
 export * from './validationErrorCtx';

@@ -11,6 +11,8 @@ import SignUpPage from './pages/SignUpPage';
 import PatientPage from './pages/patient/PatientPage';
 import UploadPage from './pages/patient/UploadPage';
 import TherapistPage from './pages/therapist/TherapistPage';
+import PlansPage from './pages/therapist/PlansPage';
+import PlanBuilderPage from './pages/therapist/PlanBuilderPage';
 import RoleRedirect from '@/components/RoleRedirect';
 import RoleRoute from '@/components/RoleRoute';
 import ComingSoon from '@/components/ComingSoon';
@@ -67,11 +69,21 @@ export default function App() {
                   </RoleRoute>
                 }
               />
+              {/* Plan Builder in the navigation: pick a patient, which opens the next page. */}
               <Route
                 path="/therapist/plans"
                 element={
                   <RoleRoute role="therapist">
-                    <ComingSoon title="Plan Builder" />
+                    <PlansPage />
+                  </RoleRoute>
+                }
+              />
+              {/* The plan builder for one linked patient. The patient list links here too. */}
+              <Route
+                path="/therapist/patients/:patientId/plan"
+                element={
+                  <RoleRoute role="therapist">
+                    <PlanBuilderPage />
                   </RoleRoute>
                 }
               />

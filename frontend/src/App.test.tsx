@@ -367,15 +367,15 @@ describe('app shell and role navigation', () => {
     api = fakeApi(200, { ...ME, role: 'therapist' });
     vi.stubGlobal('fetch', api);
 
-    renderApp('/therapist/plans');
+    // A page that sends no API request of its own (the plan pages are tested below).
+    renderApp('/therapist/progress');
     expect(await screen.findByText('Signed in as pat@example.com')).toBeDefined();
-    const plansLink = screen.getByRole('link', { name: /plan builder/i });
-    expect(plansLink.getAttribute('data-active')).toBe('true');
+    const progressLink = screen.getByRole('link', { name: /progress & analytics/i });
+    expect(progressLink.getAttribute('data-active')).toBe('true');
   });
 
   it.each([
     ['patient', '/patient/history', 'Results & History'],
-    ['therapist', '/therapist/plans', 'Plan Builder'],
     ['therapist', '/therapist/progress', 'Progress & Analytics'],
   ])('shows a "Coming soon" page for the %s page %s', async (role, path, title) => {
     clerk.isSignedIn = true;
@@ -454,6 +454,75 @@ describe('app shell and role navigation', () => {
     expect(screen.getByText('PTAssist')).toBeDefined();
     expect(document.querySelectorAll('.mantine-Skeleton-root').length).toBeGreaterThan(0);
     expect(screen.queryByText('Signed in as pat@example.com')).toBeNull();
+  });
+});
+
+describe('plan builder pages', () => {
+  const PATIENT = {
+    id: '7c2e9a41-3b5d-4f60-8e1a-9d3c5b7f2e04',
+    email: 'sam@example.com',
+    linked_at: '2026-11-11T08:30:00Z',
+  };
+  const PLAN_BUILDER = `/therapist/patients/${PATIENT.id}/plan`;
+
+  /**
+   * A fake API that answers by path: GET /me with this role, and the plan pages' requests.
+   * Any other path answers 404, as the patient's plan does when they have none yet.
+   */
+  function fakePlanApi(role: string) {
+    const answers: Record<string, unknown> = {
+      '/me': { ...ME, role },
+      '/therapist/patients': [PATIENT],
+      '/exercises': [{ id: 'squat-id', name: 'squat', display_name: 'Squat', kind: 'reps' }],
+    };
+    return vi.fn<typeof fetch>(async (input) => {
+      const path = new URL(String(input)).pathname;
+      const found = path in answers;
+      return new Response(JSON.stringify(found ? answers[path] : { detail: 'Not found' }), {
+        status: found ? 200 : 404,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+  }
+
+  it('lists the linked patients on the Plan Builder page, each linking to their plan', async () => {
+    clerk.isSignedIn = true;
+    vi.stubGlobal('fetch', fakePlanApi('therapist'));
+
+    renderApp('/therapist/plans');
+
+    const patientLink = await screen.findByRole('link', { name: 'sam@example.com' });
+    expect(patientLink.getAttribute('href')).toBe(PLAN_BUILDER);
+    expect(screen.getByRole('heading', { name: 'Plan Builder' })).toBeDefined();
+    const navLink = screen.getByRole('link', { name: /plan builder/i });
+    expect(navLink.getAttribute('data-active')).toBe('true');
+  });
+
+  it("opens one patient's plan builder at /therapist/patients/:patientId/plan", async () => {
+    clerk.isSignedIn = true;
+    vi.stubGlobal('fetch', fakePlanApi('therapist'));
+
+    renderApp(PLAN_BUILDER);
+
+    expect(await screen.findByRole('heading', { name: 'Plan for sam@example.com' })).toBeDefined();
+    expect(screen.getByRole('checkbox', { name: 'Squat' })).toBeDefined();
+    // Still under Plan Builder in the navigation.
+    const navLink = screen.getByRole('link', { name: /plan builder/i });
+    expect(navLink.getAttribute('data-active')).toBe('true');
+  });
+
+  it("keeps a patient out of the plan builder, and sends no therapist's request", async () => {
+    clerk.isSignedIn = true;
+    const api = fakePlanApi('patient');
+    vi.stubGlobal('fetch', api);
+
+    renderApp(PLAN_BUILDER);
+
+    await waitFor(() => expect(window.location.pathname).toBe('/patient'));
+    const paths = api.mock.calls.map(([url]) => new URL(String(url)).pathname);
+    expect(paths.some((path) => path.startsWith('/therapist') || path === '/exercises')).toBe(
+      false,
+    );
   });
 });
 

@@ -138,6 +138,18 @@ const { data: me, isLoading, error } = useGetMe();
 
 The result's fields, how to show them (score bands, zero reps, holds, sides), and the failure codes are in [`docs/analysis-result.md`](../docs/analysis-result.md). Sample results for building screens are in `docs/analysis-result-examples/`.
 
+## Plan builder (SCRUM-76)
+
+A therapist builds a linked patient's plan from the exercise library. The API's rules are in `backend/README.md`, Exercise library and plans.
+
+1. **Plan Builder** in the navigation (`/therapist/plans`, `PlansPage.tsx`) lists the therapist's linked patients. Each opens that patient's plan builder at `/therapist/patients/:patientId/plan` (`PlanBuilderPage.tsx`), the address the patient list links to as well.
+2. The builder loads the library (`GET /exercises`), the linked patients (to show whose plan it is), and the patient's plan. A `404` for the plan means there is none yet, so the form starts empty. An id that isn't one of the therapist's patients shows "Patient not found", without asking for a plan.
+3. Each picked exercise asks for reps per set, or a hold time in seconds for an exercise held for time (its `kind`), plus sets and times per week. Before saving, the page checks the backend's limits: reps 1 to 100, hold 1 to 120 seconds (the longest video), sets 1 to 10, times per week 1 to 7. They are copied in `LIMITS` in `PlanBuilderPage.tsx` from `backend/app/schemas/plan.py`: change them together. The backend checks them again.
+4. **Save plan** sends the whole plan with one `PUT`, which creates it or replaces its exercises. An exercise the patient has uploaded videos for can't be taken out: the API answers `409`, nothing is saved, and the page shows the API's sentence, which names the exercises. Other errors (`404`, `422`) are explained on the page too.
+5. After saving, the patient sees the plan on their My Plan page (`GET /plans/me`).
+
+Once loaded, the form keeps the therapist's changes: a refetch of the plan in the background doesn't reset it.
+
 ## Screens
 
 | Patient                      | Therapist                            |
