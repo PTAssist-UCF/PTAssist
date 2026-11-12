@@ -34,6 +34,20 @@ export const PLANK: PlanExerciseResponse = {
   times_per_week: 5,
 };
 
+export const SIDE_LEG_RAISE: PlanExerciseResponse = {
+  id: 'c5d7e9f1-2a4b-4c6d-8e0f-1a3b5c7d9e2f',
+  exercise: {
+    id: '5e4d3c2b-1a0f-4e9d-8c7b-6a5f4e3d2c1b',
+    name: 'side_leg_raise',
+    display_name: 'Side-lying leg raise',
+    kind: 'reps',
+  },
+  reps: 20,
+  hold_seconds: null,
+  sets: 2,
+  times_per_week: 3,
+};
+
 /** A plan with these exercises. */
 export function planWith(...exercises: PlanExerciseResponse[]): PlanResponse {
   return {

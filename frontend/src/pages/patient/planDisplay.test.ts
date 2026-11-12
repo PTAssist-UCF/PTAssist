@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { describeFrequency, describeTarget, uploadPath } from './planDisplay';
-import { PLANK, SQUAT } from './testPlan';
+import { PLANK, SIDE_LEG_RAISE, SQUAT } from './testPlan';
 
 describe('describeTarget', () => {
   it('gives sets and reps for an exercise done in reps', () => {
@@ -12,6 +12,10 @@ describe('describeTarget', () => {
   it('gives sets and a hold time for an exercise held for time', () => {
     expect(describeTarget(PLANK)).toBe('3 sets × 30-second hold');
     expect(describeTarget({ ...PLANK, sets: 1, hold_seconds: 45 })).toBe('1 set × 45-second hold');
+  });
+
+  it("says the side-lying leg raise's reps are a total across both sides", () => {
+    expect(describeTarget(SIDE_LEG_RAISE)).toBe('2 sets × 20 reps total across both sides');
   });
 });
 

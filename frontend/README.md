@@ -132,12 +132,13 @@ const { data: me, isLoading, error } = useGetMe();
 
 ## My plan
 
-(SCRUM-77) The patient's home page, `/patient` (`src/pages/patient/PatientPage.tsx`), shows their plan from `GET /plans/me` (`useGetMyPlan()`): one card per exercise with its targets (sets and reps, or sets and a hold time for the plank) and how many times a week, and a **Record / Upload** button.
+(SCRUM-77) The patient's home page, `/patient` (`src/pages/patient/PatientPage.tsx`), shows their plan from `GET /plans/me` (`useGetMyPlan()`): one card per exercise with its targets (sets and reps, or sets and a hold time for the plank) and how many times a week, and a **Record / Upload** button. `describeTarget` in `src/pages/patient/planDisplay.ts` words the targets for both pages. For the side-lying leg raise it says "total across both sides", because that target counts both legs together.
 
 - **The button opens `/patient/upload?plan_exercise_id=<id>`**, with the plan exercise's `id`: the `plan_exercise_id` that `POST /sessions` takes.
 - **No plan yet:** `GET /plans/me` answers `404`, and the page says the therapist hasn't assigned a plan yet. Other errors show the API's answer and a **Try again** button.
 - **The upload page looks the id up in the plan** and shows the exercise's name and targets; there is no field to type an id. Opened without an id (the **Upload Video** link in the navigation), or with one that isn't in the plan, it lists the plan's exercises to choose from. So it only ever sends an id from the patient's plan.
-- **An exercise taken out of the plan during an upload:** `POST /sessions` answers `409` and doesn't keep the video. The page shows the API's message and loads the plan again, so the patient can choose from what is left.
+- **One form per exercise:** the upload form is keyed by the plan exercise id. When the address changes to another exercise, even with the browser's Back button, the form starts over: the old form's video is never sent with the new id, and its upload is stopped.
+- **An exercise taken out of the plan:** if a therapist removes it before the upload (`POST /sessions` answers `404` "Plan exercise not found") or while the video uploads (`409`), the video isn't saved. The page says so, takes the exercise out of the cached plan (so neither page offers it again, even if the next step fails), and loads the plan again, so the patient can choose from what is left. Any other `404` is an ordinary upload error.
 - **Illustrations and instructions** for each exercise are in `src/pages/patient/exerciseInfo.ts`, by the exercise's name in the API. They are static, not plan data, and an exercise without an entry shows without them.
 - No progress yet: the page shows only what the plan holds. Progress (`GET /patients/{id}/progress`) is SCRUM-96.
 

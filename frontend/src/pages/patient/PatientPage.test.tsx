@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes, type InitialEntry } from 'react-router-dom';
 
 import PatientPage from './PatientPage';
-import { NO_PLAN, PLANK, SQUAT, fakePlanApi, planWith } from './testPlan';
+import { NO_PLAN, PLANK, SIDE_LEG_RAISE, SQUAT, fakePlanApi, planWith } from './testPlan';
 
 /** Waits a moment, so an update the page has started would show. */
 function waitAMoment() {
@@ -51,7 +51,7 @@ describe('PatientPage (My plan)', () => {
   });
 
   it('shows reps for an exercise done in reps, a hold time for the plank, and times a week', async () => {
-    fakePlanApi([200, planWith(SQUAT, PLANK)]);
+    fakePlanApi([200, planWith(SQUAT, PLANK, SIDE_LEG_RAISE)]);
 
     renderPatientPage();
 
@@ -61,6 +61,10 @@ describe('PatientPage (My plan)', () => {
     const plank = screen.getByTestId('exercise-card-plank');
     expect(within(plank).getByText('3 sets × 30-second hold')).toBeDefined();
     expect(within(plank).getByText('5 times a week')).toBeDefined();
+    const sideLegRaise = screen.getByTestId('exercise-card-side_leg_raise');
+    expect(
+      within(sideLegRaise).getByText('2 sets × 20 reps total across both sides'),
+    ).toBeDefined();
   });
 
   it("links each Record / Upload button to the upload page with the exercise's plan_exercise_id", async () => {

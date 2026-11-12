@@ -165,23 +165,24 @@ export default function PatientPage() {
                     )}
 
                     <Stack gap="xs" mt="sm">
-                      <Group justify="space-between" align="center">
-                        <Title
-                          order={3}
-                          style={{
-                            fontSize: scaleStyles.title,
-                            color: highContrast ? '#000000' : undefined,
-                          }}
-                        >
-                          {name}
-                        </Title>
-                        <Badge
-                          color={highContrast ? 'dark' : 'teal'}
-                          variant={highContrast ? 'filled' : 'light'}
-                        >
-                          {describeTarget(item)}
-                        </Badge>
-                      </Group>
+                      <Title
+                        order={3}
+                        style={{
+                          fontSize: scaleStyles.title,
+                          color: highContrast ? '#000000' : undefined,
+                        }}
+                      >
+                        {name}
+                      </Title>
+
+                      {/* Text, not a badge: a badge cuts a long target off instead of wrapping. */}
+                      <Text
+                        fw={700}
+                        c={highContrast ? '#000000' : 'teal.8'}
+                        style={{ fontSize: scaleStyles.body }}
+                      >
+                        {describeTarget(item)}
+                      </Text>
 
                       <Text
                         fw={500}
@@ -267,18 +268,12 @@ export default function PatientPage() {
             data-testid="expanded-exercise-modal"
           >
             <Stack gap="lg" p="md">
-              <Group justify="space-between" align="center" wrap="wrap">
-                <Badge
-                  size="lg"
-                  color={highContrast ? 'dark' : 'teal'}
-                  variant={highContrast ? 'filled' : 'light'}
-                >
+              <div>
+                <Text size="lg" fw={700} c={highContrast ? '#000000' : 'teal.8'}>
                   Target: {describeTarget(expandedExercise)}
-                </Badge>
-                <Badge size="lg" color="blue" variant="outline">
-                  {describeFrequency(expandedExercise.times_per_week)}
-                </Badge>
-              </Group>
+                </Text>
+                <Text size="md">{describeFrequency(expandedExercise.times_per_week)}</Text>
+              </div>
 
               {expandedInfo && (
                 <Paper withBorder p="md" radius="md" bg="gray.0">

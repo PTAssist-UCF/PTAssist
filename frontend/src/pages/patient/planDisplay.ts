@@ -19,7 +19,13 @@ export function describeTarget(item: PlanExerciseResponse): string {
   // The API sets exactly one of the two: reps for an exercise done in reps, hold_seconds
   // for one held for time.
   if (item.reps !== null) {
-    return `${sets} × ${count(item.reps, 'rep')}`;
+    const reps = count(item.reps, 'rep');
+    // The side-lying leg raise's target counts the reps of both legs together, like its
+    // result's rep_count (backend/README.md, Data model): 20 reps is 10 per leg. Without
+    // this, "20 reps" reads as 20 per leg.
+    return item.exercise.name === 'side_leg_raise'
+      ? `${sets} × ${reps} total across both sides`
+      : `${sets} × ${reps}`;
   }
   return `${sets} × ${item.hold_seconds}-second hold`;
 }
