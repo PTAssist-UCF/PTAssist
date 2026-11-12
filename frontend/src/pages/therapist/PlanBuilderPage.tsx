@@ -39,6 +39,17 @@ const LIMITS = {
   timesPerWeek: 7,
 };
 
+/**
+ * The two 404 answers to GET /therapist/patients/{patient_id}/plan, word for word from
+ * backend/app/routes/plans.py: change them together. The first means the form starts
+ * empty. The second means the therapist may not see the plan: the patient isn't linked
+ * to them, or the user is no longer a patient (they can still be in the patient list).
+ */
+const NO_PLAN_YET = 'This patient has no plan yet';
+const PATIENT_NOT_FOUND = 'Patient not found';
+
+type PlanNotFound = 'no plan yet' | 'patient not found';
+
 /** What the form holds for one exercise of the library. An empty field is ''. */
 interface ExerciseRow {
   selected: boolean;
@@ -80,8 +91,18 @@ export default function PlanBuilderPage() {
   // Asks for the plan only once the patient is known to be linked, so an address with an
   // unknown id sends no plan request.
   const plan = useGetPatientPlan(patientId, { query: { enabled: patient !== undefined } });
-  // A 404 means the patient has no plan yet, so the form starts empty.
-  const noPlanYet = plan.error instanceof ApiError && plan.error.status === 404;
+
+  // The plan's 404 answer, if it got one. While a refetch runs, a query with no plan data
+  // has no error either (for example when the therapist comes back to the tab), so the
+  // last 404 for this patient is kept until a plan arrives. Without it, the form of a
+  // first plan, and the targets typed in it, would be replaced by a spinner.
+  const answered = planNotFound(plan.error);
+  const [last404, setLast404] = useState<{ patientId: string; notFound: PlanNotFound }>();
+  if (answered && (last404?.patientId !== patientId || last404.notFound !== answered)) {
+    setLast404({ patientId, notFound: answered });
+  }
+  const notFound =
+    answered ?? (last404?.patientId === patientId && !plan.data ? last404.notFound : undefined);
 
   // An error matters only while there is nothing to show. Once the page has loaded, a
   // failed refetch in the background keeps the page, and the changes in the form.
@@ -89,11 +110,13 @@ export default function PlanBuilderPage() {
     const error = patients.error ?? exercises.error;
     return error ? <LoadError title="Couldn't load the plan builder" error={error} /> : <Loading />;
   }
-  if (!patient) {
+  // Checked before any plan is shown, even one from the cache: an id that isn't one of
+  // the therapist's patients, or a plan the API won't show them any more.
+  if (!patient || notFound === 'patient not found') {
     return (
       <Container size="md" py="md">
         <Alert color="yellow" title="Patient not found">
-          This patient isn&apos;t linked to you.{' '}
+          You can&apos;t see or change this patient&apos;s plan.{' '}
           <Anchor component={Link} to="/therapist/plans" size="sm">
             Choose one of your patients
           </Anchor>
@@ -102,7 +125,8 @@ export default function PlanBuilderPage() {
       </Container>
     );
   }
-  if (!plan.data && !noPlanYet) {
+  // Only the "no plan yet" answer starts an empty form; any other error is shown.
+  if (!plan.data && notFound !== 'no plan yet') {
     return plan.error ? (
       <LoadError title="Couldn't load the plan" error={plan.error} />
     ) : (
@@ -126,15 +150,23 @@ export default function PlanBuilderPage() {
             sees the plan on their My Plan page.
           </Text>
         </div>
-        <PlanForm patientId={patientId} exercises={exercises.data} plan={plan.data ?? null} />
+        {/* Keyed by patient: opening another patient starts a new form, so nothing typed
+            for one patient can be saved to another one's plan. */}
+        <PlanForm
+          key={patientId}
+          patientId={patientId}
+          exercises={exercises.data}
+          plan={plan.data ?? null}
+        />
       </Stack>
     </Container>
   );
 }
 
 /**
- * The form. It starts from the saved plan (or empty), and later refetches of the plan
- * don't reset it, so the therapist's changes are never thrown away in the background.
+ * The form. It starts from the latest plan (or empty), and never loses the therapist's
+ * changes: when a newer plan arrives, a form without changes shows it, and a form with
+ * changes keeps them and asks, before saving, which version to keep.
  */
 function PlanForm({
   patientId,
@@ -143,20 +175,46 @@ function PlanForm({
 }: {
   patientId: string;
   exercises: ExerciseResponse[];
+  /** The latest plan, or null when the patient has none yet. */
   plan: PlanResponse | null;
 }) {
   const queryClient = useQueryClient();
   const [rows, setRows] = useState(() => rowsFromPlan(exercises, plan));
+  // The plan the rows started from, or were last brought up to date with.
+  const [basePlan, setBasePlan] = useState(plan);
   // Errors show only after the first try to save, then update as the fields change.
   const [showErrors, setShowErrors] = useState(false);
   const save = useSavePatientPlan({
     mutation: {
-      onSuccess: (saved) => {
+      onSuccess: async (saved) => {
+        const queryKey = getGetPatientPlanQueryKey(patientId);
+        // A refetch that started before the save would answer with the old plan, and the
+        // form would then show it: cancel it first.
+        await queryClient.cancelQueries({ queryKey });
         // The answer is the saved plan: keep it, so pages that read it show it at once.
-        queryClient.setQueryData(getGetPatientPlanQueryKey(patientId), saved);
+        queryClient.setQueryData(queryKey, saved);
       },
     },
   });
+
+  // A newer plan arrived: a refetch after another therapist saved it (the cached plan
+  // shows first), or this form's own save. Compared by content, not by object.
+  const draft = contentOf(exercises, rows);
+  const base = contentOf(exercises, rowsFromPlan(exercises, basePlan));
+  const latest = contentOf(exercises, rowsFromPlan(exercises, plan));
+  if (latest !== base) {
+    if (draft === latest) {
+      setBasePlan(plan); // the form shows it already, for example after its own save
+    } else if (draft === base) {
+      // No changes in the form: show the newer plan.
+      setRows(rowsFromPlan(exercises, plan));
+      setBasePlan(plan);
+    }
+    // Otherwise the form has changes: they stay, and the therapist chooses below.
+  }
+  // Still true here only when the form has changes and a newer plan arrived. Saving
+  // would then replace the newer plan with an older list, so it waits for a choice.
+  const conflict = latest !== base;
   const errors = checkRows(exercises, rows);
 
   const changeRow = (exerciseId: string, change: Partial<ExerciseRow>) => {
@@ -164,8 +222,20 @@ function PlanForm({
     setRows((current) => ({ ...current, [exerciseId]: { ...current[exerciseId], ...change } }));
   };
 
+  // The two answers to a conflict.
+  const loadNewerPlan = () => {
+    save.reset();
+    setShowErrors(false);
+    setRows(rowsFromPlan(exercises, plan));
+    setBasePlan(plan);
+  };
+  const keepChanges = () => setBasePlan(plan);
+
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (conflict) {
+      return; // the Save button is disabled too; this covers pressing Enter in a field
+    }
     if (errors.any) {
       setShowErrors(true);
       return;
@@ -211,9 +281,26 @@ function PlanForm({
             The patient sees this plan on their My Plan page.
           </Alert>
         )}
+        {conflict && (
+          <Alert color="yellow" title="This plan changed while you were editing it">
+            <Text size="sm">
+              A newer version was saved, for example by another of this patient&apos;s therapists.
+              Load it to start again from it, or keep your changes: saving them replaces the newer
+              version.
+            </Text>
+            <Group gap="sm" mt="sm">
+              <Button size="xs" variant="default" onClick={loadNewerPlan}>
+                Load the newer version
+              </Button>
+              <Button size="xs" variant="default" onClick={keepChanges}>
+                Keep my changes
+              </Button>
+            </Group>
+          </Alert>
+        )}
 
         <Group justify="flex-end">
-          <Button type="submit" color="teal" loading={save.isPending}>
+          <Button type="submit" color="teal" loading={save.isPending} disabled={conflict}>
             Save plan
           </Button>
         </Group>
@@ -381,6 +468,36 @@ function rowsFromPlan(exercises: ExerciseResponse[], plan: PlanResponse | null):
       : { selected: false, target: '', sets: '', timesPerWeek: '' };
   }
   return rows;
+}
+
+/**
+ * What the rows ask for, as text that is easy to compare: each picked exercise with its
+ * targets. Values typed for an exercise that isn't picked don't count.
+ */
+function contentOf(exercises: ExerciseResponse[], rows: Rows): string {
+  return JSON.stringify(
+    exercises
+      .filter((exercise) => rows[exercise.id].selected)
+      .map((exercise) => {
+        const { target, sets, timesPerWeek } = rows[exercise.id];
+        return [exercise.id, target, sets, timesPerWeek];
+      }),
+  );
+}
+
+/** Which of the plan request's two 404 answers this error is, if it is one of them. */
+function planNotFound(error: Error | null): PlanNotFound | undefined {
+  if (!(error instanceof ApiError) || error.status !== 404) {
+    return undefined;
+  }
+  const detail = apiErrorDetail(error);
+  if (detail === NO_PLAN_YET) {
+    return 'no plan yet';
+  }
+  if (detail === PATIENT_NOT_FOUND) {
+    return 'patient not found';
+  }
+  return undefined; // another 404, for example from a proxy: shown as an error
 }
 
 /** The same rules the backend checks: at least one exercise, and every target in range. */

@@ -1,8 +1,8 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MantineProvider } from '@mantine/core';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { focusManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
 
 import PlanBuilderPage from './PlanBuilderPage';
 import { getGetPatientPlanQueryKey } from '@/api/plans';
@@ -14,6 +14,13 @@ const PATIENT = {
   linked_at: '2026-11-10T12:00:00Z',
 };
 const PLAN_PATH = `/therapist/patients/${PATIENT.id}/plan`;
+// A second linked patient, with a plan of their own.
+const OTHER_PATIENT = {
+  id: '7c2e9a41-3b5d-4f60-8e1a-9d3c5b7f2e04',
+  email: 'sam@example.com',
+  linked_at: '2026-11-11T08:30:00Z',
+};
+const OTHER_PLAN_PATH = `/therapist/patients/${OTHER_PATIENT.id}/plan`;
 
 // The library, in its order (by display name): three done in reps, and one held for time.
 const CAT_COW: ExerciseResponse = {
@@ -42,42 +49,65 @@ const SQUAT: ExerciseResponse = {
 };
 const EXERCISES = [CAT_COW, PLANK, SIDE_LEG_RAISE, SQUAT];
 
-/** The patient's saved plan: the plank and the squat. */
-const PLAN: PlanResponse = {
-  id: 'a7d9c1e3-0000-4000-8000-0000000000aa',
-  patient_id: PATIENT.id,
-  created_at: '2026-11-11T09:00:00Z',
-  exercises: [
-    {
-      id: 'pe-plank',
-      exercise: PLANK,
-      reps: null,
-      hold_seconds: 30,
-      sets: 3,
-      times_per_week: 5,
-    },
-    { id: 'pe-squat', exercise: SQUAT, reps: 10, hold_seconds: null, sets: 2, times_per_week: 3 },
-  ],
-};
+/**
+ * A plan for this patient. Each item is an exercise with its target (reps, or seconds for
+ * one held for time), sets, and times per week, in the library's order.
+ */
+function planOf(patientId: string, items: [ExerciseResponse, number, number, number][]) {
+  const plan: PlanResponse = {
+    id: `plan-${patientId}`,
+    patient_id: patientId,
+    created_at: '2026-11-11T09:00:00Z',
+    exercises: items.map(([exercise, target, sets, timesPerWeek]) => ({
+      id: `${patientId}-${exercise.name}`,
+      exercise,
+      reps: exercise.kind === 'reps' ? target : null,
+      hold_seconds: exercise.kind === 'hold' ? target : null,
+      sets,
+      times_per_week: timesPerWeek,
+    })),
+  };
+  return plan;
+}
 
+/** The patient's saved plan: the plank and the squat. */
+const PLAN = planOf(PATIENT.id, [
+  [PLANK, 30, 3, 5],
+  [SQUAT, 10, 2, 3],
+]);
+/** The same plan after another therapist added the cat-cow and changed the squat's reps. */
+const NEWER_PLAN = planOf(PATIENT.id, [
+  [CAT_COW, 8, 1, 2],
+  [PLANK, 30, 3, 5],
+  [SQUAT, 12, 2, 3],
+]);
+/** The other patient's plan: the cat-cow only. */
+const OTHER_PLAN = planOf(OTHER_PATIENT.id, [[CAT_COW, 6, 1, 4]]);
+
+// The API's two 404 answers for a plan (backend/app/routes/plans.py).
 const NO_PLAN = { status: 404, body: { detail: 'This patient has no plan yet' } };
+const NOT_FOUND = { status: 404, body: { detail: 'Patient not found' } };
 
 type Answer = { status: number; body?: unknown };
+
+/** The fake API's answers, by method and path. A test can change them as it goes. */
+let answers: Record<string, Answer | Promise<Answer>>;
 
 /**
  * A fake API, so the tests need no backend. Each request gets the answer for its method
  * and path; one with no answer fails like an unreachable API.
  */
 function fakeApi(overrides: Record<string, Answer> = {}) {
-  const answers: Record<string, Answer> = {
-    'GET /therapist/patients': { status: 200, body: [PATIENT] },
+  answers = {
+    'GET /therapist/patients': { status: 200, body: [PATIENT, OTHER_PATIENT] },
     'GET /exercises': { status: 200, body: EXERCISES },
     [`GET ${PLAN_PATH}`]: { status: 200, body: PLAN },
+    [`GET ${OTHER_PLAN_PATH}`]: { status: 200, body: OTHER_PLAN },
     ...overrides,
   };
   const api = vi.fn<typeof fetch>(async (input, init) => {
     const request = `${init?.method ?? 'GET'} ${new URL(String(input)).pathname}`;
-    const answer = answers[request];
+    const answer = await answers[request];
     if (!answer) {
       throw new TypeError(`No fake answer for ${request}`);
     }
@@ -90,19 +120,49 @@ function fakeApi(overrides: Record<string, Answer> = {}) {
   return api;
 }
 
+/** From now on, the fake API gives this answer, for example after someone else saved. */
+function setAnswer(request: string, answer: Answer | Promise<Answer>) {
+  answers[request] = answer;
+}
+
+/** How many times the page asked for this patient's plan. */
+function planRequests(api: ReturnType<typeof fakeApi>) {
+  return api.mock.calls.filter(
+    ([url, init]) => init?.method === 'GET' && new URL(String(url)).pathname === PLAN_PATH,
+  ).length;
+}
+
+/** The therapist goes to another tab and comes back, so the page refetches its data. */
+function switchTabsAndBack() {
+  act(() => {
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+  });
+}
+
 /** The body of the PUT that saved the plan, or undefined if nothing was saved. */
 function savedBody(api: ReturnType<typeof fakeApi>) {
   const call = api.mock.calls.find(([, init]) => init?.method === 'PUT');
   return call && { url: String(call[0]), body: JSON.parse(String(call[1]?.body)) };
 }
 
-function renderPage(path = PLAN_PATH) {
+/**
+ * Opens the page at this address. `cached` plans are already in the cache, as when the
+ * therapist opened those patients before.
+ */
+function renderPage(path = PLAN_PATH, { cached = [] }: { cached?: PlanResponse[] } = {}) {
   // retry: false, so a failed request fails at once instead of being retried.
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  for (const plan of cached) {
+    queryClient.setQueryData(getGetPatientPlanQueryKey(plan.patient_id), plan);
+  }
   render(
     <QueryClientProvider client={queryClient}>
       <MantineProvider>
         <MemoryRouter initialEntries={[path]}>
+          {/* Opens another patient's plan builder straight from this one, as the address
+              bar or a link elsewhere in the app can. */}
+          <Link to={OTHER_PLAN_PATH}>Open the other patient&apos;s plan</Link>
           <Routes>
             <Route path="/therapist/patients/:patientId/plan" element={<PlanBuilderPage />} />
             <Route path="/therapist/plans" element={<div>Choose a patient</div>} />
@@ -127,6 +187,7 @@ const saveButton = () => screen.getByRole('button', { name: 'Save plan' });
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  focusManager.setFocused(undefined); // back to following the page's visibility
 });
 
 describe('PlanBuilderPage', () => {
@@ -243,7 +304,10 @@ describe('PlanBuilderPage', () => {
   });
 
   it('saves the whole plan with one PUT, with reps or hold_seconds by kind', async () => {
-    const saved: PlanResponse = { ...PLAN, exercises: [] };
+    const saved = planOf(PATIENT.id, [
+      [PLANK, 45, 2, 5],
+      [SQUAT, 12, 3, 4],
+    ]);
     const api = fakeApi({
       [`GET ${PLAN_PATH}`]: NO_PLAN,
       [`PUT ${PLAN_PATH}`]: { status: 201, body: saved },
@@ -274,10 +338,14 @@ describe('PlanBuilderPage', () => {
     // The saved plan replaces the cached one, so the page now has a plan.
     expect(queryClient.getQueryData(getGetPatientPlanQueryKey(PATIENT.id))).toEqual(saved);
     expect(screen.queryByText('No plan yet')).toBeNull();
+    // The page's own save is not taken for someone else's.
+    expect(screen.queryByText('This plan changed while you were editing it')).toBeNull();
+    expect(field('Squat', 'Reps per set').value).toBe('12');
   });
 
   it('saves the changes to an existing plan, leaving out an exercise taken out', async () => {
-    const api = fakeApi({ [`PUT ${PLAN_PATH}`]: { status: 200, body: PLAN } });
+    const saved = planOf(PATIENT.id, [[SQUAT, 15, 2, 3]]);
+    const api = fakeApi({ [`PUT ${PLAN_PATH}`]: { status: 200, body: saved } });
     renderPage();
     await screen.findByRole('heading', { name: 'Plan for pat@example.com' });
 
@@ -289,6 +357,8 @@ describe('PlanBuilderPage', () => {
     expect(savedBody(api)?.body).toEqual({
       exercises: [{ exercise_id: SQUAT.id, reps: 15, sets: 2, times_per_week: 3 }],
     });
+    expect(screen.queryByText('This plan changed while you were editing it')).toBeNull();
+    expect(field('Squat', 'Reps per set').value).toBe('15');
   });
 
   it("explains a 409: an exercise with uploaded videos can't be taken out", async () => {
@@ -399,5 +469,184 @@ describe('PlanBuilderPage', () => {
     fireEvent.click(await screen.findByRole('link', { name: 'Choose another patient' }));
 
     expect(await screen.findByText('Choose a patient')).toBeDefined();
+  });
+});
+
+describe('PlanBuilderPage, when the patient or their plan changes', () => {
+  it("opens another patient's plan with their own exercises, even when both are cached", async () => {
+    const api = fakeApi({ [`PUT ${OTHER_PLAN_PATH}`]: { status: 200, body: OTHER_PLAN } });
+    renderPage(PLAN_PATH, { cached: [PLAN, OTHER_PLAN] });
+    await screen.findByRole('heading', { name: 'Plan for pat@example.com' });
+    type('Squat', 'Reps per set', '15'); // a change for the first patient, not saved
+
+    // Straight to the other patient's plan builder: the page itself stays open.
+    fireEvent.click(screen.getByRole('link', { name: "Open the other patient's plan" }));
+
+    expect(await screen.findByRole('heading', { name: 'Plan for sam@example.com' })).toBeDefined();
+    expect(checkbox('Cat-cow').checked).toBe(true);
+    expect(field('Cat-cow', 'Reps per set').value).toBe('6');
+    expect(checkbox('Squat').checked).toBe(false);
+    fireEvent.click(saveButton());
+    expect(await screen.findByText('Plan saved')).toBeDefined();
+    expect(savedBody(api)).toEqual({
+      url: `http://api.test${OTHER_PLAN_PATH}`,
+      body: { exercises: [{ exercise_id: CAT_COW.id, reps: 6, sets: 1, times_per_week: 4 }] },
+    });
+  });
+
+  it('shows a newer plan from a refetch when the form has no changes', async () => {
+    // The cache still holds the plan from an earlier visit; the API has a newer one.
+    const api = fakeApi({
+      [`GET ${PLAN_PATH}`]: { status: 200, body: NEWER_PLAN },
+      [`PUT ${PLAN_PATH}`]: { status: 200, body: NEWER_PLAN },
+    });
+    renderPage(PLAN_PATH, { cached: [PLAN] });
+
+    await waitFor(() => expect(checkbox('Cat-cow').checked).toBe(true));
+    expect(field('Squat', 'Reps per set').value).toBe('12');
+
+    // A change now starts from the newer plan, so the save keeps the other changes.
+    type('Plank', 'Hold time (seconds)', '40');
+    fireEvent.click(saveButton());
+    expect(await screen.findByText('Plan saved')).toBeDefined();
+    expect(savedBody(api)?.body).toEqual({
+      exercises: [
+        { exercise_id: CAT_COW.id, reps: 8, sets: 1, times_per_week: 2 },
+        { exercise_id: PLANK.id, hold_seconds: 40, sets: 3, times_per_week: 5 },
+        { exercise_id: SQUAT.id, reps: 12, sets: 2, times_per_week: 3 },
+      ],
+    });
+  });
+
+  it('asks what to keep when a newer plan arrives while the form has changes', async () => {
+    const saved = planOf(PATIENT.id, [
+      [PLANK, 30, 3, 5],
+      [SQUAT, 15, 2, 3],
+    ]);
+    const api = fakeApi({ [`PUT ${PLAN_PATH}`]: { status: 200, body: saved } });
+    renderPage();
+    await screen.findByRole('heading', { name: 'Plan for pat@example.com' });
+    type('Squat', 'Reps per set', '15');
+
+    // Meanwhile another therapist saves a newer plan, and the page refetches.
+    setAnswer(`GET ${PLAN_PATH}`, { status: 200, body: NEWER_PLAN });
+    switchTabsAndBack();
+
+    expect(await screen.findByText('This plan changed while you were editing it')).toBeDefined();
+    expect(field('Squat', 'Reps per set').value).toBe('15'); // the change is still there
+    expect(saveButton().hasAttribute('disabled')).toBe(true);
+    fireEvent.click(saveButton());
+    expect(savedBody(api)).toBeUndefined();
+
+    // Keeping the changes lets the therapist save them, in place of the newer plan.
+    fireEvent.click(screen.getByRole('button', { name: 'Keep my changes' }));
+    fireEvent.click(saveButton());
+    expect(await screen.findByText('Plan saved')).toBeDefined();
+    expect(savedBody(api)?.body).toEqual({
+      exercises: [
+        { exercise_id: PLANK.id, hold_seconds: 30, sets: 3, times_per_week: 5 },
+        { exercise_id: SQUAT.id, reps: 15, sets: 2, times_per_week: 3 },
+      ],
+    });
+  });
+
+  it('loads the newer plan instead, when the therapist chooses it', async () => {
+    fakeApi();
+    renderPage();
+    await screen.findByRole('heading', { name: 'Plan for pat@example.com' });
+    type('Squat', 'Reps per set', '15');
+    setAnswer(`GET ${PLAN_PATH}`, { status: 200, body: NEWER_PLAN });
+    switchTabsAndBack();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Load the newer version' }));
+
+    expect(checkbox('Cat-cow').checked).toBe(true);
+    expect(field('Squat', 'Reps per set').value).toBe('12');
+    expect(screen.queryByText('This plan changed while you were editing it')).toBeNull();
+    expect(saveButton().hasAttribute('disabled')).toBe(false);
+  });
+
+  it('keeps the saved plan when a refetch from before the save answers after it', async () => {
+    const saved = planOf(PATIENT.id, [
+      [PLANK, 30, 3, 5],
+      [SQUAT, 15, 2, 3],
+    ]);
+    fakeApi({ [`PUT ${PLAN_PATH}`]: { status: 200, body: saved } });
+    const { queryClient } = renderPage();
+    await screen.findByRole('heading', { name: 'Plan for pat@example.com' });
+
+    // A refetch starts, and its answer (the plan before the save) is slow to come.
+    let answerLate: (answer: Answer) => void = () => {};
+    setAnswer(`GET ${PLAN_PATH}`, new Promise<Answer>((resolve) => (answerLate = resolve)));
+    switchTabsAndBack();
+    await waitFor(() => expect(queryClient.isFetching()).toBeGreaterThan(0));
+
+    type('Squat', 'Reps per set', '15');
+    fireEvent.click(saveButton());
+    expect(await screen.findByText('Plan saved')).toBeDefined();
+    await act(async () => {
+      answerLate({ status: 200, body: PLAN });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(field('Squat', 'Reps per set').value).toBe('15');
+    expect(queryClient.getQueryData(getGetPatientPlanQueryKey(PATIENT.id))).toEqual(saved);
+  });
+
+  it('keeps the targets typed for a first plan while the page refetches', async () => {
+    const api = fakeApi({ [`GET ${PLAN_PATH}`]: NO_PLAN });
+    const { queryClient } = renderPage();
+    await screen.findByText('No plan yet');
+    fireEvent.click(checkbox('Squat'));
+    type('Squat', 'Reps per set', '12');
+    type('Squat', 'Sets', '3');
+
+    // Switching tabs refetches the plan. Its answer takes a moment, as over a network,
+    // and it is "no plan yet" again.
+    let answerLate: (answer: Answer) => void = () => {};
+    setAnswer(`GET ${PLAN_PATH}`, new Promise<Answer>((resolve) => (answerLate = resolve)));
+    switchTabsAndBack();
+    await waitFor(() => expect(planRequests(api)).toBe(2));
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+
+    // The form stays while the request runs, and after its answer.
+    expect(field('Squat', 'Reps per set').value).toBe('12');
+    await act(async () => answerLate(NO_PLAN));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(checkbox('Squat').checked).toBe(true);
+    expect(field('Squat', 'Reps per set').value).toBe('12');
+    expect(field('Squat', 'Sets').value).toBe('3');
+  });
+
+  it('says "Patient not found", not "no plan yet", when the API refuses the plan', async () => {
+    // For example a linked user who is a therapist now: still in the list, but no plan.
+    fakeApi({ [`GET ${PLAN_PATH}`]: NOT_FOUND });
+    renderPage();
+
+    expect(await screen.findByText('Patient not found')).toBeDefined();
+    expect(screen.queryByText('No plan yet')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save plan' })).toBeNull();
+  });
+
+  it('stops showing a cached plan once the API refuses it', async () => {
+    fakeApi();
+    renderPage();
+    await screen.findByRole('heading', { name: 'Plan for pat@example.com' });
+
+    setAnswer(`GET ${PLAN_PATH}`, NOT_FOUND);
+    switchTabsAndBack();
+
+    expect(await screen.findByText('Patient not found')).toBeDefined();
+    expect(screen.queryByRole('checkbox', { name: 'Squat' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save plan' })).toBeNull();
+  });
+
+  it('shows any other 404 as an error, not as an empty plan', async () => {
+    fakeApi({ [`GET ${PLAN_PATH}`]: { status: 404, body: { detail: 'Not Found' } } });
+    renderPage();
+
+    expect(await screen.findByText("Couldn't load the plan")).toBeDefined();
+    expect(screen.getByText('The API answered 404: Not Found')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Save plan' })).toBeNull();
   });
 });

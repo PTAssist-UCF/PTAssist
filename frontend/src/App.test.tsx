@@ -467,19 +467,21 @@ describe('plan builder pages', () => {
 
   /**
    * A fake API that answers by path: GET /me with this role, and the plan pages' requests.
-   * Any other path answers 404, as the patient's plan does when they have none yet.
+   * The patient has no plan yet. Any other path answers 404.
    */
   function fakePlanApi(role: string) {
-    const answers: Record<string, unknown> = {
-      '/me': { ...ME, role },
-      '/therapist/patients': [PATIENT],
-      '/exercises': [{ id: 'squat-id', name: 'squat', display_name: 'Squat', kind: 'reps' }],
+    const answers: Record<string, [number, unknown]> = {
+      '/me': [200, { ...ME, role }],
+      '/therapist/patients': [200, [PATIENT]],
+      '/exercises': [200, [{ id: 'squat-id', name: 'squat', display_name: 'Squat', kind: 'reps' }]],
+      // The API's own answer when there is no plan (backend/app/routes/plans.py).
+      [`/therapist/patients/${PATIENT.id}/plan`]: [404, { detail: 'This patient has no plan yet' }],
     };
     return vi.fn<typeof fetch>(async (input) => {
       const path = new URL(String(input)).pathname;
-      const found = path in answers;
-      return new Response(JSON.stringify(found ? answers[path] : { detail: 'Not found' }), {
-        status: found ? 200 : 404,
+      const [status, body] = answers[path] ?? [404, { detail: 'Not Found' }];
+      return new Response(JSON.stringify(body), {
+        status,
         headers: { 'Content-Type': 'application/json' },
       });
     });
