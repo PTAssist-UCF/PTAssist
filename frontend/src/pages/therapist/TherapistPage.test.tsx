@@ -1,10 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MantineProvider } from '@mantine/core';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom';
 
 import type { LinkedPatientResponse, SessionStatus, SessionSummary } from '@/api/model';
+import { getListPatientSessionsQueryKey } from '@/api/results';
 import TherapistPage from './TherapistPage';
 
 // Synthetic patients, in the order the API lists them (by email).
@@ -56,14 +57,17 @@ type Answer = { status: number; body?: unknown };
 
 /**
  * Replaces fetch with a fake API, so the page's real hooks run with no backend. `answer`
- * gets each request's method, path, and JSON body; if it throws, the request fails as if
- * the API couldn't be reached. Returns the fake, to check which requests were sent.
+ * gets each request's method, path, and JSON body, and can take its time (return a
+ * promise); if it throws, the request fails as if the API couldn't be reached. Returns the
+ * fake, to check which requests were sent.
  */
-function fakeApi(answer: (method: string, path: string, body: unknown) => Answer) {
+function fakeApi(
+  answer: (method: string, path: string, body: unknown) => Answer | Promise<Answer>,
+) {
   const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
     const { pathname } = new URL(String(input));
     const requestBody = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
-    const { status, body } = answer(init?.method ?? 'GET', pathname, requestBody);
+    const { status, body } = await answer(init?.method ?? 'GET', pathname, requestBody);
     return new Response(body === undefined ? null : JSON.stringify(body), {
       status,
       headers: { 'Content-Type': 'application/json' },
@@ -120,11 +124,14 @@ function PlanPage() {
   return <div>Plan page for {patientId}</div>;
 }
 
-/** Opens the page at /therapist, wrapped the way main.tsx and App.tsx wrap it. */
+/**
+ * Opens the page at /therapist, wrapped the way main.tsx and App.tsx wrap it. Returns the
+ * page's query client, to make it read again.
+ */
 function renderPage() {
   // retry: false, so a failed request fails at once instead of being retried.
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  render(
     <QueryClientProvider client={queryClient}>
       <MantineProvider>
         <MemoryRouter initialEntries={['/therapist']}>
@@ -136,6 +143,12 @@ function renderPage() {
       </MantineProvider>
     </QueryClientProvider>,
   );
+  return { queryClient };
+}
+
+/** Waits a moment, so an answer the fake API just sent reaches the page. */
+function waitAMoment() {
+  return act(() => new Promise((resolve) => setTimeout(resolve, 20)));
 }
 
 /** The table row of the patient with this email. */
@@ -243,6 +256,36 @@ describe('patient list', () => {
     expect(await within(ana).findByText("Couldn't load sessions")).toBeDefined();
   });
 
+  // The API answers 404 for a patient the caller may no longer see, for example a patient
+  // made a therapist while the link stayed (can_see_patient). A 403 is treated the same.
+  it.each([404, 403])(
+    'stops showing the last session once the API denies access to it (%s)',
+    async (status) => {
+      let denied = false;
+      fakeApi((method, path) =>
+        denied && path === `/patients/${ANA.id}/sessions`
+          ? { status, body: { detail: 'Patient not found' } }
+          : answerReads(method, path, [ANA], {
+              [ANA.id]: [session('complete', '2026-11-10T15:00:00Z')],
+            }),
+      );
+      const { queryClient } = renderPage();
+      const ana = await findRow('ana@example.com');
+      expect(await within(ana).findByText('Complete')).toBeDefined();
+
+      // The page reads the sessions again, as when the therapist comes back to the tab.
+      denied = true;
+      await act(() =>
+        queryClient.refetchQueries({ queryKey: getListPatientSessionsQueryKey(ANA.id) }),
+      );
+
+      expect(await within(ana).findByText('Sessions not available')).toBeDefined();
+      expect(within(ana).queryByText('Complete')).toBeNull();
+      expect(within(ana).queryByText('Squat')).toBeNull();
+      expect(ana.querySelector('time')).toBeNull();
+    },
+  );
+
   it("links each patient to their plan page, at the plan builder's address", async () => {
     fakeApi((method, path) => answerReads(method, path, [ANA]));
     renderPage();
@@ -274,6 +317,52 @@ describe('linking a patient', () => {
     // The email went out without the spaces around it.
     const [[, post]] = requests(api, 'POST', '/therapist/patients');
     expect(JSON.parse(post?.body as string)).toEqual({ email: 'New.Patient@Example.com' });
+  });
+
+  it('shows the new patient when the link is answered before the list first loads', async () => {
+    const linked = [ANA];
+    let listReads = 0;
+    let releaseFirstRead = () => {};
+    const firstReadHeld = new Promise<void>((resolve) => {
+      releaseFirstRead = resolve;
+    });
+    let firstReadAnswered = false;
+    fakeApi(async (method, path, body) => {
+      if (method === 'GET' && path === '/therapist/patients') {
+        listReads += 1;
+        // A read answers with the list as it was when the read arrived.
+        const patients = [...linked];
+        if (listReads === 1) {
+          // The first read is slow: it arrived before the link, and answers after it.
+          await firstReadHeld;
+          firstReadAnswered = true;
+        }
+        return { status: 200, body: patients };
+      }
+      if (method === 'POST' && path === '/therapist/patients') {
+        const { email } = body as { email: string };
+        const patient = { id: NEW_PATIENT_ID, email, linked_at: '2026-11-12T15:00:00Z' };
+        linked.push(patient);
+        // The slow first read answers a moment after the page gets this answer.
+        setTimeout(releaseFirstRead, 50);
+        return { status: 201, body: patient };
+      }
+      return answerReads(method, path, linked);
+    });
+    renderPage();
+
+    // The link button works while the list is still loading.
+    expect(screen.getByText('Loading your patients…')).toBeDefined();
+    const dialog = await openLinkDialog();
+    submitEmail(dialog, 'new.patient@example.com');
+
+    expect(await screen.findByText('Linked new.patient@example.com.')).toBeDefined();
+    // The slow first read has answered too, with the list from before the link. The page
+    // must not show that one.
+    await waitFor(() => expect(firstReadAnswered).toBe(true));
+    await waitAMoment();
+    expect(screen.getByText('new.patient@example.com')).toBeDefined();
+    expect(screen.getByText('ana@example.com')).toBeDefined();
   });
 
   it('asks for an email before sending anything, and clears that once one is typed', async () => {
@@ -404,12 +493,52 @@ describe('unlinking a patient', () => {
     expect(requests(api, 'DELETE', `/therapist/patients/${ANA.id}`)).toHaveLength(1);
   });
 
-  it('says so when the patient was already unlinked, and refreshes the list', async () => {
-    const api = fakeApi((method, path) =>
-      method === 'DELETE'
-        ? { status: 404, body: { detail: 'Patient not found' } }
-        : answerReads(method, path, [ANA]),
-    );
+  it('takes the patient and their last session off the page even if the list then fails to load', async () => {
+    let unlinked = false;
+    const api = fakeApi((method, path) => {
+      if (method === 'DELETE' && path === `/therapist/patients/${ANA.id}`) {
+        unlinked = true;
+        return { status: 204 };
+      }
+      // Loading the list again fails, so only the page itself can take Ana off it.
+      if (unlinked && path === '/therapist/patients') {
+        return { status: 500, body: { detail: 'Internal Server Error' } };
+      }
+      return answerReads(method, path, [ANA, BEN], {
+        [ANA.id]: [session('complete', '2026-11-10T15:00:00Z')],
+      });
+    });
+    renderPage();
+    const ana = await findRow('ana@example.com');
+    await within(ana).findByText('Complete');
+
+    fireEvent.click(within(ana).getByRole('button', { name: 'Unlink ana@example.com' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Unlink patient?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Unlink' }));
+
+    expect(await screen.findByText('Unlinked ana@example.com.')).toBeDefined();
+    // The page asked for the list again, and that failed.
+    await waitFor(() => expect(requests(api, 'GET', '/therapist/patients')).toHaveLength(2));
+    await waitAMoment();
+    // Ana's row, with her last session, is gone; Ben's stays.
+    expect(ana.isConnected).toBe(false);
+    expect(screen.queryByText('Complete')).toBeNull();
+    expect(screen.getByText('ben@example.com')).toBeDefined();
+  });
+
+  it('says so when the patient was already unlinked, and takes them off the list', async () => {
+    let deleteAnswered = false;
+    const api = fakeApi((method, path) => {
+      if (method === 'DELETE') {
+        deleteAnswered = true;
+        return { status: 404, body: { detail: 'Patient not found' } };
+      }
+      // Loading the list again fails, so only the page itself can take Ana off it.
+      if (deleteAnswered && path === '/therapist/patients') {
+        return { status: 500, body: { detail: 'Internal Server Error' } };
+      }
+      return answerReads(method, path, [ANA, BEN]);
+    });
     renderPage();
     const ana = await findRow('ana@example.com');
 
@@ -421,5 +550,9 @@ describe('unlinking a patient', () => {
       await within(dialog).findByText('This patient is no longer linked to you.'),
     ).toBeDefined();
     await waitFor(() => expect(requests(api, 'GET', '/therapist/patients')).toHaveLength(2));
+    await waitAMoment();
+    // Ana's row is gone (the dialog, still open, names her); Ben's stays.
+    expect(ana.isConnected).toBe(false);
+    expect(screen.getByText('ben@example.com')).toBeDefined();
   });
 });

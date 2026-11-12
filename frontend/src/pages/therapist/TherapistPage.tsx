@@ -19,6 +19,7 @@ import { useDisclosure } from '@mantine/hooks';
 import type { LinkedPatientResponse, SessionStatus } from '@/api/model';
 import { useListLinkedPatients } from '@/api/patients';
 import { useListPatientSessions } from '@/api/results';
+import { ApiError } from '@/apiClient';
 import { apiErrorText } from './apiErrorText';
 import LinkPatientModal from './LinkPatientModal';
 import UnlinkPatientModal from './UnlinkPatientModal';
@@ -185,6 +186,17 @@ function PatientList({ onUnlink }: { onUnlink: (patient: LinkedPatientResponse) 
  */
 function LastSession({ patientId }: { patientId: string }) {
   const { data: sessions, error } = useListPatientSessions(patientId);
+
+  // 403 or 404: this therapist may no longer see the patient's sessions, for example
+  // because the patient was made a therapist and the link stayed. Checked before the
+  // sessions, so the ones loaded earlier (still in the cache) stop showing.
+  if (error instanceof ApiError && (error.status === 403 || error.status === 404)) {
+    return (
+      <Text size="sm" c="dimmed">
+        Sessions not available
+      </Text>
+    );
+  }
 
   if (!sessions) {
     return (

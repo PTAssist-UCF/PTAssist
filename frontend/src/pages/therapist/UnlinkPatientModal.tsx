@@ -49,8 +49,20 @@ function ConfirmUnlink({
   const [error, setError] = useState<string | null>(null);
   const unlinkPatient = useUnlinkPatient({
     mutation: {
-      // Whatever the answer, so a patient who was already unlinked (404) leaves the list.
-      onSettled: () => queryClient.invalidateQueries({ queryKey: getListLinkedPatientsQueryKey() }),
+      onSettled: async (_data, failure) => {
+        const queryKey = getListLinkedPatientsQueryKey();
+        // Stop any read of the list still on its way: it may still list the patient.
+        await queryClient.cancelQueries({ queryKey });
+        // Unlinked (204), or already unlinked (404): take them off the list in the cache
+        // now, so they and their last session leave the page even if the reload fails.
+        if (!failure || (failure instanceof ApiError && failure.status === 404)) {
+          queryClient.setQueryData<LinkedPatientResponse[]>(queryKey, (patients) =>
+            patients?.filter((linked) => linked.id !== patient.id),
+          );
+        }
+        // Then load the list again, whatever the answer, without making the dialog wait.
+        void queryClient.invalidateQueries({ queryKey });
+      },
     },
   });
 

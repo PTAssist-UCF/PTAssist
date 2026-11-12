@@ -49,7 +49,14 @@ function LinkPatientForm({
     mutation: {
       // Here rather than in mutate(), so the list refreshes even if the dialog was closed
       // before the answer came.
-      onSuccess: () => queryClient.invalidateQueries({ queryKey: getListLinkedPatientsQueryKey() }),
+      onSuccess: async () => {
+        const queryKey = getListLinkedPatientsQueryKey();
+        // A read of the list still on its way (the first load, when a patient is linked
+        // before the list arrives) may hold the list from before this link, and the
+        // refetch below would reuse its answer instead of asking again. So cancel it.
+        await queryClient.cancelQueries({ queryKey });
+        await queryClient.invalidateQueries({ queryKey });
+      },
     },
   });
 
