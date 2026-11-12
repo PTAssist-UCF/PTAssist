@@ -4,7 +4,7 @@ The result of analyzing one exercise video: the rep count (or hold time), form s
 
 - The **AI service** makes it: `POST /analyze` returns it.
 - The **backend** checks it, saves it, and records its own failures in the same shape.
-- The **frontend** shows it, using types generated from the backend's API (Orval) once an API route returns it (SCRUM-64).
+- The **frontend** shows it, using types generated from the backend's API (Orval). `GET /sessions/{session_id}/result` returns it (SCRUM-64, see Sessions, results, and progress in `backend/README.md`).
 
 This contract was set in SCRUM-28. The [decisions](#decisions) behind it, and how to change each one, are at the end of this page.
 
@@ -99,6 +99,7 @@ The contract rejects a result whose fields contradict each other, so the fronten
 - `status` is `"failed"`: show `error_message`, and offer a re-upload unless `error_code` is `unknown_exercise` (uploading again would fail the same way).
 - `hold_seconds` is not null: show the hold time. It can be `0`, so check for null, not for a true value. Otherwise, show `rep_count`.
 - Color `form_score` and each rep's `score` by [band](#scoring).
+- On the progress chart (`GET /patients/{patient_id}/progress`), each complete result is a point, with the same rules: chart `hold_seconds` for a hold exercise and `rep_count` for the others, and a null `form_score` (no rep or hold seen) is not a score of 0.
 
 ## Reps and holds
 
@@ -225,7 +226,7 @@ Results are saved in the database and kept, so a result saved before a change mu
 - **Do not rename or remove fields, or change their types.** If that is ever unavoidable, the same pull request needs an Alembic migration that rewrites the saved results.
 - **Adding an error code is fine:** add it to `ErrorCode` and `ERROR_MESSAGES` (a test checks every code has a message). Removing or renaming a code needs the migration.
 - **New validation rules** must still accept every result already saved.
-- Then copy the file to the backend, update this page and the examples, and, once the API returns results (SCRUM-64), regenerate the frontend's hooks (`npm run generate:api`, see `frontend/README.md`, Talking to the API).
+- Then copy the file to the backend, update this page and the examples, and regenerate the frontend's hooks (`npm run generate:api`, see `frontend/README.md`, Talking to the API): the API returns results (SCRUM-64), so its `AnalysisResult` type changes with the contract.
 
 ## How the backend stores it
 
@@ -237,10 +238,11 @@ The backend builds this in SCRUM-43 (tables) and SCRUM-45 (calling the AI servic
 - `Session.status` (`processing`, `complete`, or `failed`) is what the frontend polls. Once it is `complete` or `failed`, the `SessionResult` has the details.
 - The whole result is stored in one JSONB column, with no separate columns for `rep_count` or `form_score`. Postgres can still read fields inside it (for example `result->>'form_score'` for the progress chart). If a query ever needs it, a migration can add real columns.
 - The backend checks every result from the AI service against the contract before saving it. An answer that does not match is a bug, so the session is saved as failed with `analysis_unavailable` instead.
+- The API returns saved results as they are, checked against the contract again (SCRUM-64): `GET /sessions/{session_id}/result` returns a session's whole result (null while it is processing), and `GET /patients/{patient_id}/progress` returns the scores and counts of complete results, for the progress chart. See Sessions, results, and progress in `backend/README.md`.
 
 ## Examples
 
-`docs/analysis-result-examples/` has one file for each kind of result. Codes, messages, tips, metrics, and numbers in the example files are placeholders until the exercise specs (SCRUM-29) are written. The frontend can use them as test data until the API returns real results (SCRUM-64). The result view (SCRUM-59) is built before any API route returns this result, so Orval has no `AnalysisResult` type yet. Until then, write a temporary TypeScript type from the field tables on this page, outside the generated `src/api/` folder, and delete it once a route returns the result and the Orval hooks are regenerated.
+`docs/analysis-result-examples/` has one file for each kind of result. Codes, messages, tips, metrics, and numbers in the example files are placeholders until the exercise specs (SCRUM-29) are written. The frontend can use them as test data. The result view (SCRUM-59) was built before any API route returned this result, with a temporary TypeScript type outside the generated `src/api/` folder (`frontend/src/components/ResultView/types.ts`). `GET /sessions/{session_id}/result` returns it now (SCRUM-64), so once the Orval hooks are regenerated, use the generated `AnalysisResult` type and delete the temporary one.
 
 | File | Shows |
 | --- | --- |

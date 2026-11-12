@@ -124,7 +124,7 @@ In Docker Compose, run it in the `api` container: `docker compose exec api pytho
 3. Check the role (patient or therapist). Wrong role means `403`.
 4. Check ownership: patients see only their own data, therapists see only linked patients. Not yours means `404`.
 
-Steps 1 and 2 are the `CurrentUser` dependency (see Sign-in). For step 3, a therapist-only route takes `CurrentTherapist` instead, from the same file: it answers `403` to anyone who is not a therapist. For step 4, `get_link` in `app/auth/ownership.py` returns a therapist's link to a patient, or `None` when they are not linked.
+Steps 1 and 2 are the `CurrentUser` dependency (see Sign-in). For step 3, a therapist-only route takes `CurrentTherapist` instead, from the same file: it answers `403` to anyone who is not a therapist. For step 4, `get_link` in `app/auth/ownership.py` returns a therapist's link to a patient, or `None` when they are not linked. Routes that both roles call use `can_see_patient` from the same file instead: the role decides the rule (a patient may see only their own data, a therapist only the data of linked users who are still patients), so a request outside it is `404`, not `403` (see Sessions, results, and progress).
 
 Roles live in our database, not in Clerk. Therapists are promoted by the team with a script (see Promote a therapist).
 
@@ -221,7 +221,7 @@ A session's result is saved once: after a session is `complete` or `failed` it n
 
 The AI service may take up to 3 minutes for a 2-minute clip, counting from a cold start. On Azure, Container Apps ends any HTTP request after 240 seconds, so the timeout in step 2 (`AI_SERVICE_TIMEOUT_SECONDS`, 230 seconds by default) must be between 3 and 4 minutes. The stuck cutoff in step 5 must be longer than that timeout, so the cleanup never fails a session the background task is still waiting on. See [Clip limits and timing](../docs/analysis-result.md#clip-limits-and-timing).
 
-The frontend polls the session status. Once it is `complete` or `failed`, the `SessionResult` has the details, including the failure reason. Later, a job queue can replace the background task without changing the API.
+The frontend polls the session status. Once it is `complete` or `failed`, the `SessionResult` has the details, including the failure reason (`GET /sessions/{session_id}/result`, see Sessions, results, and progress). Later, a job queue can replace the background task without changing the API.
 
 ## Analysis results
 
@@ -251,8 +251,8 @@ Each route's function name becomes its operation id in the API description (`/op
 | Exercises | `GET /exercises` | Anyone signed in |
 | Patients | `GET/POST /therapist/patients`, `DELETE /therapist/patients/{patient_id}` | Therapist |
 | Plans | `GET/PUT /therapist/patients/{patient_id}/plan`, `GET /plans/me` | Therapist (a linked patient's), patient (their own) |
-| Sessions | `POST /sessions`, `GET /sessions/{id}`, `GET /sessions` | Patient (therapist can read linked patients') |
-| Progress | `GET /patients/{id}/progress` | Therapist |
+| Sessions | `POST /sessions`, `GET /sessions/{id}` | Patient (therapist can read linked patients') |
+| Results | `GET /patients/{id}/sessions`, `GET /sessions/{id}/result`, `GET /patients/{id}/progress` | Patient, and therapists linked to them |
 
 ## Linking patients (SCRUM-62)
 
@@ -423,7 +423,7 @@ Both the `201` acknowledgement and `GET /sessions/{session_id}` return:
 Status is visible to the owning patient and therapists currently linked to that
 patient. Other patients, unlinked therapists, and unknown IDs receive `404`.
 The response never exposes a private storage key or a signed video URL. Results
-and progress are handled separately in SCRUM-64.
+and progress have their own routes (see Sessions, results, and progress).
 
 **Analysis starts after the response.** Once the session is committed, the route
 schedules the background analysis (next section) and answers `201` with the session
@@ -502,6 +502,54 @@ a stub that returns made-up results, so a local upload ends `complete` with thos
 Tests never call the AI service: see Testing. `tests/test_analysis_job.py` covers
 each row above, a session that finishes during the call, and a job that runs twice.
 It uses real sockets for an AI service that is down or never answers.
+
+## Sessions, results, and progress (SCRUM-64)
+
+Read-only routes for a patient's history: their sessions, each session's analysis result, and their progress per exercise. The patient and their linked therapists call the same routes. Uploading, and the status the upload page polls, are unchanged (see the two sections above).
+
+| Endpoint | Returns |
+| --- | --- |
+| `GET /patients/{patient_id}/sessions` | The patient's sessions from all their plans, newest first, without results |
+| `GET /sessions/{session_id}/result` | One session with its analysis result, which is `null` while the session is processing |
+| `GET /patients/{patient_id}/progress` | For each exercise, the patient's complete sessions, oldest first, with the numbers a chart needs |
+
+**Who sees what.** A patient sees only their own data: `patient_id` is their own user id, from `GET /me`. A therapist sees only the data of users they are linked to who are still patients, all of it, including sessions for another therapist's plan (links are per patient, as for `GET /sessions/{session_id}`). Both users' current roles count (`can_see_patient` in `app/auth/ownership.py`), because a role change with `--force` keeps links, plans, and sessions (see Promote a therapist). So after one, a leftover link shows a patient nothing, a therapist no longer sees their own sessions from when they were a patient, and a former patient's therapists no longer see that history, the same rule as the plan endpoints (SCRUM-63).
+
+| Status | When |
+| --- | --- |
+| `200` | The data, or an empty list when the patient has no sessions (for progress: no complete ones) |
+| `401` | No valid token |
+| `404` | Another patient's data, a patient the therapist is not linked to, a linked user who is no longer a patient, or an unknown id: all get the same answer, so it doesn't tell whether the patient or session exists |
+| `422` | The id in the path is not a UUID |
+
+A session in the list (`SessionSummary`) has `id`, `plan_exercise_id`, `status`, and `created_at`, as in `SessionResponse`, plus `exercise_name` (the exercise's name in the API, such as `squat`) and `exercise_display_name` (such as `Squat`). The result route (`SessionResultResponse`) answers with the same fields plus `result`: the saved `AnalysisResult`, described in [`docs/analysis-result.md`](../docs/analysis-result.md) (a failed one has the reason in `error_code` and `error_message`), or `null` while the session is `processing`. Once the session is `complete` or `failed`, `result` is set: the job saves the result and the status together, and the route reads both in one query, so an answer never pairs `processing` with a result.
+
+Progress is a list with one entry (`ExerciseProgress`) per exercise, ordered by `exercise_name`: `exercise_name`, `exercise_display_name`, `exercise_kind` (`reps`, or `hold` for the plank), and `sessions`, the chart's points, oldest first (`ProgressPoint`):
+
+| Field | Meaning |
+| --- | --- |
+| `session_id` | The session, for example to open its result |
+| `created_at` | When the video was uploaded: the time axis |
+| `form_score` | From the result. `null` when no rep or hold was seen, which is not a score of 0 |
+| `rep_count`, `hold_seconds` | From the result. Exactly one is set: `hold_seconds` for hold exercises, `rep_count` for the others |
+| `analyzer_version` | From the result. Scores from different versions may not be comparable, so a chart can mark where it changes |
+
+- Only complete sessions are points: failed and processing sessions have no numbers. An exercise without a complete session is left out, so the plan (SCRUM-63), not progress, says what is assigned.
+- One point per session. One video is one set, so a day with 3 sets has 3 points; a chart can group them by day.
+- Progress is per exercise, not per plan: squats from two plans are one line.
+
+**Decisions** (SCRUM-64). Each says why, and what to change if we change our minds:
+
+1. **The result has its own route, and `GET /sessions/{session_id}` is unchanged.** *Why:* the upload page polls that route every 3 seconds and relies on its four fields. *To change:* adding `result` to `SessionResponse` as an optional field is an allowed change, but `tests/test_sessions.py` and `tests/test_results.py` check its exact fields.
+2. **A session that is still processing has `"result": null` with a `200`, not an error.** *Why:* processing is a normal state, not a failure, and `404` already means "not yours or doesn't exist". *To change:* answer `409` in `get_session_result`, and make `result` required.
+3. **The list has no results.** *Why:* a result holds every rep, so the list stays small however many sessions a patient has. The result route has the details, and progress has the scores. *To change:* add an optional `result`, or a few of its fields such as `form_score`, to `SessionSummary`.
+4. **Both roles use the same routes, with the patient's id in the path**, instead of separate routes for patients (such as `/me/sessions`) and therapists. *Why:* one rule and one hook for each question, so patient and therapist screens can share code. *To change:* add patient routes that run the same queries with the caller's own id.
+5. **Progress has one point per complete session, grouped by exercise across plans, and leaves out exercises without one.** *Why:* only complete results have numbers, and the plan endpoints decide what is assigned (SCRUM-63). *To change:* `get_patient_progress` in `app/routes/results.py`.
+6. **Saved results go out as the contract's `AnalysisResult`, checked again with `AnalysisResult.model_validate`.** *Why:* the API description then has the real type, so the frontend's generated `AnalysisResult` can replace its temporary one (SCRUM-59), and a broken saved result fails loudly instead of reaching a screen. *To change:* nothing when the contract gains a field: these routes return it too.
+7. **No pagination.** *Why:* a proof of concept has few sessions per patient. *To change:* add query parameters to the list, such as `limit` and `before` (a time).
+8. **A therapist sees a linked user's data only while that user is a patient.** *Why:* a forced promotion keeps the link, but someone who is no longer a patient should not stay visible to their old therapists through a link nobody removed, and the plan endpoints (SCRUM-63) answer `404` in that case too. *To change:* `can_see_patient` in `app/auth/ownership.py`.
+
+**Frontend handoff:** router tag `results` (`src/api/results.ts`); operation ids `list_patient_sessions`, `get_session_result`, and `get_patient_progress`. Regenerating the hooks (`npm run generate:api`) also brings the `AnalysisResult` type, with `RepResult` and `Issue`, which replaces the temporary type in `frontend/src/components/ResultView/types.ts` (SCRUM-59). `tests/test_results.py` covers each route with complete, failed, and processing sessions, the wrong owner, the wrong role, a role change on either side of a link, and no token, plus a result saved while the result route reads the session.
 
 ## Storage
 
