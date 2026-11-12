@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { useLocation, Link, Outlet } from 'react-router-dom';
+import { useLocation, Link, Outlet, matchPath } from 'react-router-dom';
 import {
   AppShell,
   Burger,
@@ -127,7 +127,11 @@ export default function AppShellLayout({ children }: { children?: ReactNode }) {
                 to="/therapist/plans"
                 label="Plan Builder"
                 description="Prescribe exercises"
-                active={location.pathname === '/therapist/plans'}
+                active={
+                  location.pathname === '/therapist/plans' ||
+                  // Also while building one patient's plan.
+                  matchPath('/therapist/patients/:patientId/plan', location.pathname) !== null
+                }
                 onClick={close}
               />
               <NavLink
