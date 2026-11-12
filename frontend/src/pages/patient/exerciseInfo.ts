@@ -1,17 +1,9 @@
-export interface AssignedExercise {
-  id: string;
-  name: string;
-  displayName: string;
-  kind: 'reps' | 'hold';
-  targetSets: number;
-  targetPerSet: number;
-  unit: 'reps' | 'seconds';
-  targetDescription: string;
-  completedSets: number;
-  completedUnits: number;
-  totalUnits: number;
-  progressPercent: number;
-  progressDescription: string;
+/**
+ * An illustration and short instructions for each exercise of the library, shown on the
+ * plan's cards. Static content, not plan data: the exercises and their targets come
+ * from the patient's plan (GET /plans/me).
+ */
+export interface ExerciseInfo {
   instructions: string;
   imageUrl: string;
 }
@@ -109,98 +101,33 @@ const catCowSvg = `
   <line x1="30" y1="125" x2="160" y2="125" stroke="#20c997" stroke-width="3" stroke-linecap="round" opacity="0.6"/>
 `;
 
-// Sample data until the page loads the patient's real plan from the API.
-// The ids are made up and only used as React keys: they are not real plan exercise ids,
-// so never send them to the API (POST /sessions would answer 404 "Plan exercise not found").
-export const MOCK_ASSIGNED_EXERCISES: AssignedExercise[] = [
-  {
-    id: 'a1b2c3d4-e5f6-7890-1234-56789abcdef0',
-    name: 'squat',
-    displayName: 'Squat',
-    kind: 'reps',
-    targetSets: 3,
-    targetPerSet: 10,
-    unit: 'reps',
-    targetDescription: '3 sets × 10 reps',
-    completedSets: 2,
-    completedUnits: 20,
-    totalUnits: 30,
-    progressPercent: 67,
-    progressDescription: '2 of 3 sets completed today (20 of 30 reps). 1 set remaining.',
+// By the exercise's name in the API (docs/analysis-result.md, Exercise names). An
+// exercise missing here, such as one added to the library later, shows without an
+// illustration or instructions.
+export const EXERCISE_INFO: Partial<Record<string, ExerciseInfo>> = {
+  squat: {
     instructions:
       'Keep your back straight, feet shoulder-width apart, and lower your hips until thighs are parallel to the ground.',
     imageUrl: createSvgDataUrl('Squat Posture', squatSvg),
   },
-  {
-    id: 'b2c3d4e5-f6a7-8901-2345-6789abcdef01',
-    name: 'shoulder_abduction',
-    displayName: 'Shoulder Abduction',
-    kind: 'reps',
-    targetSets: 2,
-    targetPerSet: 10,
-    unit: 'reps',
-    targetDescription: '2 sets × 10 reps',
-    completedSets: 1,
-    completedUnits: 10,
-    totalUnits: 20,
-    progressPercent: 50,
-    progressDescription: '1 of 2 sets completed today (10 of 20 reps). 1 set remaining.',
+  shoulder_abduction: {
     instructions:
       'Standing upright, raise your arm laterally up to shoulder height without hiking your shoulder.',
     imageUrl: createSvgDataUrl('Shoulder Abduction Posture', shoulderAbductionSvg),
   },
-  {
-    id: 'c3d4e5f6-a7b8-9012-3456-789abcdef012',
-    name: 'plank',
-    displayName: 'Plank',
-    kind: 'hold',
-    targetSets: 3,
-    targetPerSet: 30,
-    unit: 'seconds',
-    targetDescription: '3 sets × 30s hold',
-    completedSets: 3,
-    completedUnits: 90,
-    totalUnits: 90,
-    progressPercent: 100,
-    progressDescription: 'All 3 sets completed today (90 of 90 seconds held). Target achieved!',
+  plank: {
     instructions:
       'Support your body on forearms and toes, maintaining a rigid straight line from head to heels.',
     imageUrl: createSvgDataUrl('Plank Posture', plankSvg),
   },
-  {
-    id: 'd4e5f6a7-b8c9-0123-4567-89abcdef0123',
-    name: 'side_leg_raise',
-    displayName: 'Side Leg Raise',
-    kind: 'reps',
-    targetSets: 2,
-    targetPerSet: 20,
-    unit: 'reps',
-    targetDescription: '2 sets × 20 reps',
-    completedSets: 0,
-    completedUnits: 0,
-    totalUnits: 40,
-    progressPercent: 0,
-    progressDescription: '0 of 2 sets completed today. Not started yet.',
+  side_leg_raise: {
     instructions:
       'Lie on your side with hips stacked, raising your top leg upward in a controlled, smooth motion.',
     imageUrl: createSvgDataUrl('Side Leg Raise Posture', sideLegRaiseSvg),
   },
-  {
-    id: 'e5f6a7b8-c9d0-1234-5678-9abcdef01234',
-    name: 'cat_cow',
-    displayName: 'Cat-Cow',
-    kind: 'reps',
-    targetSets: 2,
-    targetPerSet: 8,
-    unit: 'reps',
-    targetDescription: '2 sets × 8 reps',
-    completedSets: 1,
-    completedUnits: 8,
-    totalUnits: 16,
-    progressPercent: 50,
-    progressDescription: '1 of 2 sets completed today (8 of 16 reps). 1 set remaining.',
+  cat_cow: {
     instructions:
       'Start on hands and knees, alternating between arching your spine upward (cat) and dropping your belly (cow).',
     imageUrl: createSvgDataUrl('Cat-Cow Posture', catCowSvg),
   },
-];
+};

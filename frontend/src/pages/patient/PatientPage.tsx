@@ -13,22 +13,34 @@ import {
   Paper,
   Alert,
   Image,
-  RingProgress,
   Modal,
-  Box,
 } from '@mantine/core';
 
-import { MOCK_ASSIGNED_EXERCISES, type AssignedExercise } from './mockExercises';
+import { useGetMyPlan } from '@/api/plans';
 import AccessibilityToolbar, { type TextScale } from './AccessibilityToolbar';
+import { EXERCISE_INFO } from './exerciseInfo';
+import PlanStatus from './PlanStatus';
+import { describeFrequency, describeTarget, uploadPath } from './planDisplay';
 
+/**
+ * The patient's home page, "My plan": the exercises their therapist assigned
+ * (GET /plans/me), each with its targets and a button to upload a video for it.
+ */
 export default function PatientPage() {
   const location = useLocation();
   const uploadedSessionId = (location.state as { uploadedSessionId?: string } | null)
     ?.uploadedSessionId;
 
-  const [expandedExercise, setExpandedExercise] = useState<AssignedExercise | null>(null);
+  const { data: plan, isPending, isFetching, error, refetch } = useGetMyPlan();
+  const exercises = plan?.exercises ?? [];
+
+  // The plan exercise whose details dialog is open, by id.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [textScale, setTextScale] = useState<TextScale>('normal');
   const [highContrast, setHighContrast] = useState<boolean>(false);
+
+  const expandedExercise = exercises.find((item) => item.id === expandedId);
+  const expandedInfo = expandedExercise && EXERCISE_INFO[expandedExercise.exercise.name];
 
   // Font size multipliers based on accessibility textScale
   const scaleStyles = {
@@ -66,12 +78,6 @@ export default function PatientPage() {
           </Alert>
         )}
 
-        {/* The exercises below come from mockExercises.ts, not the patient's real plan.
-            Remove this note once the page loads the real plan from the API. */}
-        <Alert color="gray" title="Sample data">
-          These exercises and progress numbers are examples, not your real plan yet.
-        </Alert>
-
         <Paper
           withBorder
           p="lg"
@@ -92,62 +98,73 @@ export default function PatientPage() {
               >
                 My Exercise Plan
               </Title>
-              <Text c={highContrast ? 'dark.8' : 'dimmed'} style={{ fontSize: scaleStyles.body }}>
-                Click on any exercise card to expand details. Complete your assigned sets to reach
-                your therapy goals.
-              </Text>
+              {exercises.length > 0 && (
+                <Text c={highContrast ? 'dark.8' : 'dimmed'} style={{ fontSize: scaleStyles.body }}>
+                  Click on any exercise card to expand details. Each video you upload is one set, so
+                  record one video for each set.
+                </Text>
+              )}
             </div>
           </Group>
 
-          <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="lg">
-            {MOCK_ASSIGNED_EXERCISES.map((exercise) => {
-              const progressColor =
-                exercise.progressPercent === 100
-                  ? 'teal'
-                  : exercise.progressPercent > 0
-                    ? 'blue'
-                    : 'gray';
+          {exercises.length === 0 ? (
+            // Loading, no plan yet (404), or an error.
+            <PlanStatus
+              isPending={isPending}
+              isFetching={isFetching}
+              error={error}
+              onRetry={() => void refetch()}
+            />
+          ) : (
+            <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="lg">
+              {exercises.map((item) => {
+                const name = item.exercise.display_name;
+                const info = EXERCISE_INFO[item.exercise.name];
 
-              return (
-                <Card
-                  key={exercise.id}
-                  shadow="sm"
-                  padding="md"
-                  radius="md"
-                  withBorder
-                  role="button"
-                  tabIndex={0}
-                  aria-haspopup="dialog"
-                  aria-label={`View details for ${exercise.displayName}. Progress: ${exercise.progressPercent} percent.`}
-                  onClick={() => setExpandedExercise(exercise)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      setExpandedExercise(exercise);
-                    }
-                  }}
-                  style={{
-                    cursor: 'pointer',
-                    transition: 'transform 150ms ease, box-shadow 150ms ease',
-                    borderWidth: highContrast ? '2px' : '1px',
-                    borderColor: highContrast ? '#000000' : undefined,
-                    backgroundColor: highContrast ? '#ffffff' : undefined,
-                  }}
-                  data-testid={`exercise-card-${exercise.name}`}
-                >
-                  <Card.Section>
-                    <Image
-                      src={exercise.imageUrl}
-                      height={160}
-                      alt={`Illustration showing posture for ${exercise.displayName}`}
-                      fit="contain"
-                      p="xs"
-                      bg="gray.0"
-                    />
-                  </Card.Section>
+                return (
+                  <Card
+                    key={item.id}
+                    shadow="sm"
+                    padding="md"
+                    radius="md"
+                    withBorder
+                    role="button"
+                    tabIndex={0}
+                    aria-haspopup="dialog"
+                    aria-label={`View details for ${name}`}
+                    onClick={() => setExpandedId(item.id)}
+                    onKeyDown={(e) => {
+                      // Only keys pressed on the card itself. Enter on the Record / Upload
+                      // link inside it must open the upload page, not this dialog.
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setExpandedId(item.id);
+                      }
+                    }}
+                    style={{
+                      cursor: 'pointer',
+                      transition: 'transform 150ms ease, box-shadow 150ms ease',
+                      borderWidth: highContrast ? '2px' : '1px',
+                      borderColor: highContrast ? '#000000' : undefined,
+                      backgroundColor: highContrast ? '#ffffff' : undefined,
+                    }}
+                    data-testid={`exercise-card-${item.exercise.name}`}
+                  >
+                    {info && (
+                      <Card.Section>
+                        <Image
+                          src={info.imageUrl}
+                          height={160}
+                          alt={`Illustration showing posture for ${name}`}
+                          fit="contain"
+                          p="xs"
+                          bg="gray.0"
+                        />
+                      </Card.Section>
+                    )}
 
-                  <Stack gap="xs" mt="sm">
-                    <Group justify="space-between" align="center">
+                    <Stack gap="xs" mt="sm">
                       <Title
                         order={3}
                         style={{
@@ -155,109 +172,74 @@ export default function PatientPage() {
                           color: highContrast ? '#000000' : undefined,
                         }}
                       >
-                        {exercise.displayName}
+                        {name}
                       </Title>
-                      <Badge
-                        color={highContrast ? 'dark' : 'teal'}
-                        variant={highContrast ? 'filled' : 'light'}
+
+                      {/* Text, not a badge: a badge cuts a long target off instead of wrapping. */}
+                      <Text
+                        fw={700}
+                        c={highContrast ? '#000000' : 'teal.8'}
+                        style={{ fontSize: scaleStyles.body }}
                       >
-                        {exercise.targetDescription}
-                      </Badge>
-                    </Group>
+                        {describeTarget(item)}
+                      </Text>
 
-                    {/* Progress representation: Pie chart (RingProgress) + Written Description */}
-                    <Paper
-                      withBorder
-                      p="xs"
-                      radius="sm"
-                      bg={highContrast ? '#f8f9fa' : 'gray.0'}
-                      style={{
-                        borderColor: highContrast ? '#000000' : undefined,
-                      }}
-                    >
-                      <Group gap="md" align="center" wrap="nowrap">
-                        <RingProgress
-                          size={85}
-                          thickness={9}
-                          roundCaps
-                          sections={[{ value: exercise.progressPercent, color: progressColor }]}
-                          label={
-                            <Text
-                              ta="center"
-                              fw={700}
-                              size="xs"
-                              c={highContrast ? '#000000' : undefined}
-                            >
-                              {exercise.progressPercent}%
-                            </Text>
-                          }
-                          aria-label={`${exercise.displayName} progress pie chart: ${exercise.progressPercent}% complete`}
-                        />
-                        <Box style={{ flex: 1 }}>
-                          <Text
-                            size="xs"
-                            fw={700}
-                            tt="uppercase"
-                            c={highContrast ? '#000000' : 'dimmed'}
-                          >
-                            Today's Progress
-                          </Text>
-                          <Text
-                            style={{
-                              fontSize: scaleStyles.desc,
-                              lineHeight: 1.35,
-                              color: highContrast ? '#000000' : undefined,
-                            }}
-                          >
-                            {exercise.progressDescription}
-                          </Text>
-                        </Box>
-                      </Group>
-                    </Paper>
-
-                    <Text
-                      c={highContrast ? 'dark.9' : 'dimmed'}
-                      style={{ fontSize: scaleStyles.desc }}
-                      lineClamp={2}
-                    >
-                      {exercise.instructions}
-                    </Text>
-
-                    <Group justify="space-between" mt="xs">
-                      <Button
-                        variant="subtle"
-                        size="xs"
-                        color={highContrast ? 'dark' : 'teal'}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setExpandedExercise(exercise);
+                      <Text
+                        fw={500}
+                        style={{
+                          fontSize: scaleStyles.body,
+                          color: highContrast ? '#000000' : undefined,
                         }}
                       >
-                        Expand Card
-                      </Button>
-                      <Button
-                        color="teal"
-                        size="xs"
-                        radius="md"
-                        component={Link}
-                        to={`/patient/upload?exercise=${exercise.name}`}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        Record / Upload
-                      </Button>
-                    </Group>
-                  </Stack>
-                </Card>
-              );
-            })}
-          </SimpleGrid>
+                        {describeFrequency(item.times_per_week)}
+                      </Text>
+
+                      {info && (
+                        <Text
+                          c={highContrast ? 'dark.9' : 'dimmed'}
+                          style={{ fontSize: scaleStyles.desc }}
+                          lineClamp={2}
+                        >
+                          {info.instructions}
+                        </Text>
+                      )}
+
+                      <Group justify="space-between" mt="xs">
+                        <Button
+                          variant="subtle"
+                          size="xs"
+                          color={highContrast ? 'dark' : 'teal'}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setExpandedId(item.id);
+                          }}
+                        >
+                          Expand Card
+                        </Button>
+                        <Button
+                          color="teal"
+                          size="xs"
+                          radius="md"
+                          component={Link}
+                          to={uploadPath(item.id)}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          Record / Upload
+                        </Button>
+                      </Group>
+                    </Stack>
+                  </Card>
+                );
+              })}
+            </SimpleGrid>
+          )}
         </Paper>
 
         {/* Expanded Card Modal covering most of the page (~85% width) with backdrop greying */}
         {expandedExercise && (
           <Modal
             opened={!!expandedExercise}
-            onClose={() => setExpandedExercise(null)}
+            onClose={() => setExpandedId(null)}
             transitionProps={{ duration: 0 }}
             size="85%"
             radius="md"
@@ -270,7 +252,7 @@ export default function PatientPage() {
                   color: highContrast ? '#000000' : 'teal.8',
                 }}
               >
-                {expandedExercise.displayName}
+                {expandedExercise.exercise.display_name}
               </Text>
             }
             overlayProps={{
@@ -286,75 +268,47 @@ export default function PatientPage() {
             data-testid="expanded-exercise-modal"
           >
             <Stack gap="lg" p="md">
-              <Group justify="space-between" align="center" wrap="wrap">
-                <Badge
-                  size="lg"
-                  color={highContrast ? 'dark' : 'teal'}
-                  variant={highContrast ? 'filled' : 'light'}
-                >
-                  Target: {expandedExercise.targetDescription}
-                </Badge>
-                <Badge size="lg" color="blue" variant="outline">
-                  Status: {expandedExercise.progressPercent}% Completed
-                </Badge>
-              </Group>
+              <div>
+                <Text size="lg" fw={700} c={highContrast ? '#000000' : 'teal.8'}>
+                  Target: {describeTarget(expandedExercise)}
+                </Text>
+                <Text size="md">{describeFrequency(expandedExercise.times_per_week)}</Text>
+              </div>
 
-              <Paper withBorder p="md" radius="md" bg="gray.0">
-                <Image
-                  src={expandedExercise.imageUrl}
-                  height={260}
-                  alt={`Detailed illustration of ${expandedExercise.displayName}`}
-                  fit="contain"
-                />
-              </Paper>
-
-              {/* Expanded progress section */}
-              <Paper withBorder p="md" radius="md">
-                <Group gap="xl" align="center" wrap="wrap">
-                  <RingProgress
-                    size={130}
-                    thickness={14}
-                    roundCaps
-                    sections={[
-                      {
-                        value: expandedExercise.progressPercent,
-                        color:
-                          expandedExercise.progressPercent === 100
-                            ? 'teal'
-                            : expandedExercise.progressPercent > 0
-                              ? 'blue'
-                              : 'gray',
-                      },
-                    ]}
-                    label={
-                      <Text ta="center" fw={700} size="md">
-                        {expandedExercise.progressPercent}%
-                      </Text>
-                    }
+              {expandedInfo && (
+                <Paper withBorder p="md" radius="md" bg="gray.0">
+                  <Image
+                    src={expandedInfo.imageUrl}
+                    height={260}
+                    alt={`Detailed illustration of ${expandedExercise.exercise.display_name}`}
+                    fit="contain"
                   />
-                  <Box style={{ flex: 1 }}>
-                    <Title order={4} mb="xs">
-                      Daily Progress Summary
-                    </Title>
-                    <Text size="md" mb="xs">
-                      {expandedExercise.progressDescription}
-                    </Text>
-                    <Text size="sm" c="dimmed">
-                      {expandedExercise.instructions}
-                    </Text>
-                  </Box>
-                </Group>
+                </Paper>
+              )}
+
+              <Paper withBorder p="md" radius="md">
+                <Title order={4} mb="xs">
+                  How to Do It
+                </Title>
+                {expandedInfo && (
+                  <Text size="md" mb="xs">
+                    {expandedInfo.instructions}
+                  </Text>
+                )}
+                <Text size="sm" c="dimmed">
+                  Each video you upload is one set. Record one video for each set.
+                </Text>
               </Paper>
 
               <Group justify="space-between" mt="md">
-                <Button variant="default" onClick={() => setExpandedExercise(null)}>
+                <Button variant="default" onClick={() => setExpandedId(null)}>
                   Close
                 </Button>
                 <Button
                   color="teal"
                   size="md"
                   component={Link}
-                  to={`/patient/upload?exercise=${expandedExercise.name}`}
+                  to={uploadPath(expandedExercise.id)}
                 >
                   Record / Upload Set
                 </Button>

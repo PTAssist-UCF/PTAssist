@@ -1,85 +1,167 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MantineProvider } from '@mantine/core';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes, type InitialEntry } from 'react-router-dom';
 
 import PatientPage from './PatientPage';
-import { MOCK_ASSIGNED_EXERCISES } from './mockExercises';
+import { NO_PLAN, PLANK, SIDE_LEG_RAISE, SQUAT, fakePlanApi, planWith } from './testPlan';
 
-describe('PatientPage Dashboard', () => {
+/** Waits a moment, so an update the page has started would show. */
+function waitAMoment() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+describe('PatientPage (My plan)', () => {
   afterEach(() => {
     cleanup();
+    vi.unstubAllGlobals();
   });
 
   function renderPatientPage(initialEntries: InitialEntry[] = ['/patient']) {
+    // retry: false, so a failed request fails at once instead of being retried.
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     return render(
-      <MantineProvider>
-        <MemoryRouter initialEntries={initialEntries}>
-          <Routes>
-            <Route path="/patient" element={<PatientPage />} />
-            <Route path="/patient/upload" element={<div>Upload Page</div>} />
-          </Routes>
-        </MemoryRouter>
-      </MantineProvider>,
+      <QueryClientProvider client={queryClient}>
+        <MantineProvider>
+          <MemoryRouter initialEntries={initialEntries}>
+            <Routes>
+              <Route path="/patient" element={<PatientPage />} />
+              <Route path="/patient/upload" element={<div>Upload Page</div>} />
+            </Routes>
+          </MemoryRouter>
+        </MantineProvider>
+      </QueryClientProvider>,
     );
   }
 
-  it('renders the dashboard heading and all 5 assigned exercise cards', () => {
+  it("shows the exercises of the patient's plan, from GET /plans/me", async () => {
+    const api = fakePlanApi([200, planWith(SQUAT, PLANK)]);
+
     renderPatientPage();
 
     expect(screen.getByRole('heading', { name: 'My Exercise Plan' })).toBeDefined();
-
-    for (const exercise of MOCK_ASSIGNED_EXERCISES) {
-      expect(screen.getByTestId(`exercise-card-${exercise.name}`)).toBeDefined();
-      expect(screen.getByRole('heading', { name: exercise.displayName })).toBeDefined();
-    }
+    expect(await screen.findByTestId('exercise-card-squat')).toBeDefined();
+    expect(screen.getByTestId('exercise-card-plank')).toBeDefined();
+    expect(screen.getByRole('heading', { name: 'Squat' })).toBeDefined();
+    expect(screen.getByRole('heading', { name: 'Plank' })).toBeDefined();
+    // The illustrations come with the page, by exercise name.
+    expect(screen.getByAltText('Illustration showing posture for Squat')).toBeDefined();
+    expect(api.mock.calls[0][0]).toBe('http://api.test/plans/me');
   });
 
-  it('each card contains exercise name, image, pie chart (ring progress), and written description', () => {
+  it('shows reps for an exercise done in reps, a hold time for the plank, and times a week', async () => {
+    fakePlanApi([200, planWith(SQUAT, PLANK, SIDE_LEG_RAISE)]);
+
     renderPatientPage();
 
-    for (const exercise of MOCK_ASSIGNED_EXERCISES) {
-      const card = screen.getByTestId(`exercise-card-${exercise.name}`);
-
-      // Exercise name
-      expect(card.textContent).toContain(exercise.displayName);
-
-      // Target description
-      expect(card.textContent).toContain(exercise.targetDescription);
-
-      // Image with alt text
-      const img = screen.getByAltText(
-        `Illustration showing posture for ${exercise.displayName}`,
-      ) as HTMLImageElement;
-      expect(img).toBeDefined();
-      expect(img.src).toContain('data:image/svg+xml');
-
-      // Pie chart / Ring progress
-      const ring = screen.getByLabelText(new RegExp(`${exercise.displayName} progress pie chart`));
-      expect(ring).toBeDefined();
-      expect(card.textContent).toContain(`${exercise.progressPercent}%`);
-
-      // Written description of progress
-      expect(card.textContent).toContain(exercise.progressDescription);
-    }
+    const squat = await screen.findByTestId('exercise-card-squat');
+    expect(within(squat).getByText('3 sets × 10 reps')).toBeDefined();
+    expect(within(squat).getByText('3 times a week')).toBeDefined();
+    const plank = screen.getByTestId('exercise-card-plank');
+    expect(within(plank).getByText('3 sets × 30-second hold')).toBeDefined();
+    expect(within(plank).getByText('5 times a week')).toBeDefined();
+    const sideLegRaise = screen.getByTestId('exercise-card-side_leg_raise');
+    expect(
+      within(sideLegRaise).getByText('2 sets × 20 reps total across both sides'),
+    ).toBeDefined();
   });
 
-  it('opens an expanded card modal when a card is clicked, greying out background', async () => {
+  it("links each Record / Upload button to the upload page with the exercise's plan_exercise_id", async () => {
+    fakePlanApi([200, planWith(SQUAT, PLANK)]);
+
     renderPatientPage();
 
-    const squatCard = screen.getByTestId('exercise-card-squat');
-    fireEvent.click(squatCard);
+    const squat = await screen.findByTestId('exercise-card-squat');
+    const plank = screen.getByTestId('exercise-card-plank');
+    expect(screen.getAllByRole('link', { name: 'Record / Upload' })).toHaveLength(2);
+    expect(within(plank).getByRole('link', { name: 'Record / Upload' }).getAttribute('href')).toBe(
+      `/patient/upload?plan_exercise_id=${PLANK.id}`,
+    );
+
+    const squatUpload = within(squat).getByRole('link', { name: 'Record / Upload' });
+    expect(squatUpload.getAttribute('href')).toBe(`/patient/upload?plan_exercise_id=${SQUAT.id}`);
+    fireEvent.click(squatUpload);
+    expect(await screen.findByText('Upload Page')).toBeDefined();
+  });
+
+  it("says so when the therapist hasn't assigned a plan yet (404)", async () => {
+    fakePlanApi([404, NO_PLAN]);
+
+    renderPatientPage();
+
+    expect(await screen.findByText("Your therapist hasn't assigned a plan yet")).toBeDefined();
+    expect(screen.queryByRole('link', { name: /record \/ upload/i })).toBeNull();
+  });
+
+  it('shows a spinner while the plan loads', () => {
+    vi.stubGlobal('fetch', () => new Promise(() => {}));
+
+    renderPatientPage();
+
+    expect(screen.getByText('Loading your plan...')).toBeDefined();
+    expect(screen.queryByRole('link', { name: /record \/ upload/i })).toBeNull();
+  });
+
+  it('shows why the plan could not load, and loads it again on Try again', async () => {
+    const api = fakePlanApi([500, { detail: 'Database unavailable' }], [200, planWith(SQUAT)]);
+
+    renderPatientPage();
+
+    expect(await screen.findByText('Could not load your plan')).toBeDefined();
+    expect(screen.getByText('The API answered 500: Database unavailable')).toBeDefined();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByTestId('exercise-card-squat')).toBeDefined();
+    expect(api).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows no sample data or made-up progress', async () => {
+    fakePlanApi([200, planWith(SQUAT, PLANK)]);
+
+    renderPatientPage();
+    await screen.findByTestId('exercise-card-squat');
+
+    expect(screen.queryByText('Sample data')).toBeNull();
+    expect(screen.queryByText(/progress/i)).toBeNull();
+    expect(screen.queryByText(/completed/i)).toBeNull();
+    expect(document.querySelector('.mantine-RingProgress-root')).toBeNull();
+  });
+
+  it('shows an exercise that has no illustration, such as one added to the library later', async () => {
+    const lunge = {
+      ...SQUAT,
+      exercise: { ...SQUAT.exercise, name: 'lunge', display_name: 'Lunge' },
+    };
+    fakePlanApi([200, planWith(lunge)]);
+
+    renderPatientPage();
+
+    const card = await screen.findByTestId('exercise-card-lunge');
+    expect(within(card).getByRole('heading', { name: 'Lunge' })).toBeDefined();
+    expect(within(card).getByText('3 sets × 10 reps')).toBeDefined();
+    expect(within(card).queryByRole('img')).toBeNull();
+  });
+
+  it('opens a details dialog when a card is clicked, with an upload link for that exercise', async () => {
+    fakePlanApi([200, planWith(SQUAT, PLANK)]);
+
+    renderPatientPage();
+    fireEvent.click(await screen.findByTestId('exercise-card-squat'));
 
     // Modal dialog opens covering the page
     const dialog = await screen.findByRole('dialog');
-    expect(dialog).toBeDefined();
     expect(await screen.findByTestId('expanded-exercise-modal')).toBeDefined();
     expect(screen.getAllByRole('heading', { name: 'Squat' }).length).toBeGreaterThan(0);
-    expect(screen.getByText('Daily Progress Summary')).toBeDefined();
+    expect(within(dialog).getByText('Target: 3 sets × 10 reps')).toBeDefined();
+    expect(within(dialog).getByText('3 times a week')).toBeDefined();
+    expect(
+      within(dialog).getByRole('link', { name: 'Record / Upload Set' }).getAttribute('href'),
+    ).toBe(`/patient/upload?plan_exercise_id=${SQUAT.id}`);
 
     // Close button dismisses modal
-    const closeButton = screen.getByRole('button', { name: 'Close' });
-    fireEvent.click(closeButton);
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
 
     await waitFor(() => {
       expect(screen.queryByTestId('expanded-exercise-modal')).toBeNull();
@@ -87,17 +169,37 @@ describe('PatientPage Dashboard', () => {
   });
 
   it('supports expanding card via keyboard navigation (Enter key)', async () => {
-    renderPatientPage();
+    fakePlanApi([200, planWith(SQUAT, PLANK)]);
 
-    const plankCard = screen.getByTestId('exercise-card-plank');
-    fireEvent.keyDown(plankCard, { key: 'Enter', code: 'Enter' });
+    renderPatientPage();
+    fireEvent.keyDown(await screen.findByTestId('exercise-card-plank'), {
+      key: 'Enter',
+      code: 'Enter',
+    });
 
     expect(await screen.findByRole('dialog')).toBeDefined();
     expect(screen.getAllByRole('heading', { name: 'Plank' }).length).toBeGreaterThan(0);
   });
 
-  it('provides an accessibility toolbar with text scaling and high contrast toggle', () => {
+  it('leaves Enter on the Record / Upload link to the link, without opening the dialog', async () => {
+    fakePlanApi([200, planWith(SQUAT)]);
+
     renderPatientPage();
+    const card = await screen.findByTestId('exercise-card-squat');
+    fireEvent.keyDown(within(card).getByRole('link', { name: 'Record / Upload' }), {
+      key: 'Enter',
+      code: 'Enter',
+    });
+    await waitAMoment();
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('provides an accessibility toolbar with text scaling and high contrast toggle', async () => {
+    fakePlanApi([200, planWith(SQUAT, PLANK)]);
+
+    renderPatientPage();
+    await screen.findByTestId('exercise-card-squat');
 
     // Accessibility region
     expect(screen.getByRole('region', { name: 'Accessibility options' })).toBeDefined();
@@ -115,24 +217,9 @@ describe('PatientPage Dashboard', () => {
     fireEvent.click(highContrastSwitch);
   });
 
-  it('links the Record / Upload button to /patient/upload without a made-up plan exercise id', () => {
-    renderPatientPage();
+  it('shows processing notification when redirected after a session upload', async () => {
+    fakePlanApi([200, planWith(SQUAT)]);
 
-    const uploadButtons = screen.getAllByRole('link', { name: /record \/ upload/i });
-    expect(uploadButtons.length).toBe(MOCK_ASSIGNED_EXERCISES.length);
-
-    const firstButton = uploadButtons[0];
-    expect(firstButton.getAttribute('href')).toBe(
-      `/patient/upload?exercise=${MOCK_ASSIGNED_EXERCISES[0].name}`,
-    );
-  });
-
-  it('says the exercises are sample data', () => {
-    renderPatientPage();
-    expect(screen.getByText('Sample data')).toBeDefined();
-  });
-
-  it('shows processing notification when redirected after a session upload', () => {
     renderPatientPage([
       {
         pathname: '/patient',
@@ -143,5 +230,6 @@ describe('PatientPage Dashboard', () => {
     expect(screen.getByText('Upload in Progress')).toBeDefined();
     expect(screen.getByText('sess-987-abc')).toBeDefined();
     expect(screen.getByText('processing')).toBeDefined();
+    expect(await screen.findByTestId('exercise-card-squat')).toBeDefined();
   });
 });

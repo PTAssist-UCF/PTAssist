@@ -78,6 +78,20 @@ function fakeApi(status: number, body: unknown) {
   );
 }
 
+/**
+ * A fake API for ME, a patient whose therapist hasn't made their plan yet: GET /plans/me
+ * answers 404, and every other request gets ME.
+ */
+function fakePatientApi() {
+  const me = fakeApi(200, ME);
+  const noPlan = fakeApi(404, {
+    detail: "You don't have a plan yet. Your therapist will make one for you.",
+  });
+  return vi.fn<typeof fetch>((input, init) =>
+    String(input).endsWith('/plans/me') ? noPlan(input, init) : me(input, init),
+  );
+}
+
 /** Opens the app at this address, wrapped the way main.tsx wraps it. */
 function renderApp(path: string) {
   window.history.replaceState(null, '', path);
@@ -111,7 +125,7 @@ beforeEach(() => {
   clerk.settings = null;
   env.clerkPublishableKey = 'pk_test_unit-tests';
   // Every test gets a fake API, so none can reach the network. Tests can swap it.
-  api = fakeApi(200, ME);
+  api = fakePatientApi();
   vi.stubGlobal('fetch', api);
 });
 
@@ -299,7 +313,7 @@ describe('sign-out', () => {
 describe('app shell and role navigation', () => {
   it('renders the patient shell with patient navigation for a patient', async () => {
     clerk.isSignedIn = true;
-    api = fakeApi(200, { ...ME, role: 'patient' });
+    api = fakePatientApi();
     vi.stubGlobal('fetch', api);
 
     renderApp('/patient');
@@ -354,7 +368,7 @@ describe('app shell and role navigation', () => {
 
   it('highlights the active navigation link when visiting role subroutes', async () => {
     clerk.isSignedIn = true;
-    api = fakeApi(200, { ...ME, role: 'patient' });
+    api = fakePatientApi();
     vi.stubGlobal('fetch', api);
 
     renderApp('/patient/upload');
@@ -393,15 +407,16 @@ describe('app shell and role navigation', () => {
 
   it('renders the upload page for a patient at /patient/upload', async () => {
     clerk.isSignedIn = true;
-    api = fakeApi(200, { ...ME, role: 'patient' });
+    api = fakePatientApi();
     vi.stubGlobal('fetch', api);
 
     renderApp('/patient/upload');
 
     expect(await screen.findByRole('heading', { name: 'Upload Video' })).toBeDefined();
-    expect(screen.getByLabelText(/plan exercise id/i)).toBeDefined();
-    expect(screen.getByRole('button', { name: /record with camera/i })).toBeDefined();
-    expect(screen.getByRole('button', { name: /choose video file/i })).toBeDefined();
+    // No plan yet, so nothing to upload a video for, and no field to type an exercise id.
+    expect(await screen.findByText("Your therapist hasn't assigned a plan yet")).toBeDefined();
+    expect(screen.queryByLabelText(/plan exercise id/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /record with camera/i })).toBeNull();
   });
 
   it('hides the email on phone widths, so Sign out still fits in the header', async () => {
