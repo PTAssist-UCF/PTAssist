@@ -156,7 +156,12 @@ GRID: dict[tuple[str, str], Row] = {
     ("GET", "/therapist/patients"): Row(
         allowed={"therapist": 200},
         wrong_role={"patient": 403, "therapist made patient": 403},
-        wrong_owner="No id: it lists the caller's own links, never another's",
+        # A link left over from making pat a therapist is left out of the list, as
+        # test_therapist_patients.py checks, so it shows nothing about pat.
+        wrong_owner=(
+            "No id: it lists the caller's own links, never another's, and only to "
+            "users who are still patients"
+        ),
     ),
     ("DELETE", "/therapist/patients/{patient_id}"): Row(
         # Removing a link left over from before pat was made a therapist shows nothing.

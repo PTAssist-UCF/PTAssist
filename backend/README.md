@@ -263,7 +263,7 @@ A therapist links a patient by the email the patient signed in with, and then se
 | Endpoint | Does | Success |
 | --- | --- | --- |
 | `POST /therapist/patients` with `{"email": "..."}` | Links the patient who uses that email | `201` with the linked patient |
-| `GET /therapist/patients` | Lists the caller's linked patients, ordered by email | `200` with a list (empty if none) |
+| `GET /therapist/patients` | Lists the users the caller is linked to who are still patients, ordered by email | `200` with a list (empty if none) |
 | `DELETE /therapist/patients/{patient_id}` | Removes the caller's link to that patient | `204`, no body |
 
 A linked patient is `{"id", "email", "linked_at"}`: the patient's user id (the `patient_id` to unlink), their email, and when this therapist linked them.
@@ -273,6 +273,7 @@ A linked patient is `{"id", "email", "linked_at"}`: the patient's user id (the `
 - **An email that two patients use gets `409`.** Our copy of an email is never updated (see Sign-in), so an old user row can share its email with a newer one. The API never guesses which patient is meant; the team fixes the data.
 - **A patient can have several therapists.** Each therapist sees only their own links.
 - **Unlinking removes only the link.** A patient the caller is not linked to (an unknown id, or another therapist's patient) gets `404`, not `403`, so the answer doesn't tell who is linked to whom. Plans, sessions, and results are kept (results are never deleted). The therapist just stops seeing them, because every therapist check goes through the link, and sees them again after linking the patient again. The patient keeps their plan, and still sees it and uploads to it (see [Plan decisions](#plan-decisions)).
+- **A linked user who is made a therapist leaves the list.** A role change with `--force` keeps the link (see Promote a therapist), but the list leaves them out, the same rule as for their data (decision 8 in Sessions, results, and progress). They come back if they are made a patient again. Unlinking is unchanged: it removes any link of the caller's, also one the list no longer shows, and removing it shows nothing.
 
 | Status | When |
 | --- | --- |
@@ -551,7 +552,7 @@ Progress is a list with one entry (`ExerciseProgress`) per exercise, ordered by 
 5. **Progress has one point per complete session, grouped by exercise across plans, and leaves out exercises without one.** *Why:* only complete results have numbers, and the plan endpoints decide what is assigned (SCRUM-63). *To change:* `get_patient_progress` in `app/routes/results.py`.
 6. **Saved results go out as the contract's `AnalysisResult`, checked again with `AnalysisResult.model_validate`.** *Why:* the API description then has the real type, so the frontend's generated `AnalysisResult` can replace its temporary one (SCRUM-59), and a broken saved result fails loudly instead of reaching a screen. *To change:* nothing when the contract gains a field: these routes return it too.
 7. **No pagination.** *Why:* a proof of concept has few sessions per patient. *To change:* add query parameters to the list, such as `limit` and `before` (a time).
-8. **A therapist sees a linked user's data only while that user is a patient.** *Why:* a forced promotion keeps the link, but someone who is no longer a patient should not stay visible to their old therapists through a link nobody removed, and the plan endpoints (SCRUM-63) answer `404` in that case too. *To change:* `can_see_patient` in `app/auth/ownership.py`.
+8. **A therapist sees a linked user's data, and the user in their list of patients, only while that user is a patient.** *Why:* a forced promotion keeps the link, but someone who is no longer a patient should not stay visible to their old therapists through a link nobody removed, and the plan endpoints (SCRUM-63) answer `404` in that case too. Unlinking still removes such a link (see Linking patients). *To change:* `linked_patients` in `app/auth/ownership.py`, which `can_see_patient` and `GET /therapist/patients` use. The plan endpoints check the role themselves (`_find_linked_patient` in `app/routes/plans.py`).
 
 **Frontend handoff:** router tag `results` (`src/api/results.ts`); operation ids `list_patient_sessions`, `get_session_result`, and `get_patient_progress`. Regenerating the hooks (`npm run generate:api`) also brings the `AnalysisResult` type, with `RepResult` and `Issue`, which replaces the temporary type in `frontend/src/components/ResultView/types.ts` (SCRUM-59). `tests/test_results.py` covers each route with complete, failed, and processing sessions, the wrong owner, the wrong role, a role change on either side of a link, and no token, plus a result saved while the result route reads the session.
 

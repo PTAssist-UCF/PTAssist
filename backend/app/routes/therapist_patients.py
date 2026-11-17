@@ -12,7 +12,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.auth.current_user import CurrentTherapist
-from app.auth.ownership import get_link
+from app.auth.ownership import get_link, linked_patients
 from app.db import get_db
 from app.models import Role, TherapistPatient, User
 from app.schemas.therapist_patient import LinkedPatientResponse, LinkPatientRequest
@@ -74,13 +74,9 @@ def link_patient(
 def list_linked_patients(
     therapist: CurrentTherapist, db: Database
 ) -> list[LinkedPatientResponse]:
-    """The caller's linked patients, ordered by email. Never another therapist's."""
-    rows = db.execute(
-        select(User, TherapistPatient.created_at)
-        .join(TherapistPatient, TherapistPatient.patient_id == User.id)
-        .where(TherapistPatient.therapist_id == therapist.id)
-        .order_by(User.email, User.id)
-    )
+    """The caller's linked patients, ordered by email. Never another therapist's, and
+    never a linked user who is no longer a patient (linked_patients)."""
+    rows = db.execute(linked_patients(therapist.id).order_by(User.email, User.id))
     return [
         LinkedPatientResponse(id=patient.id, email=patient.email, linked_at=linked_at)
         for patient, linked_at in rows
@@ -92,6 +88,8 @@ def unlink_patient(
     patient_id: uuid.UUID, therapist: CurrentTherapist, db: Database
 ) -> None:
     """Remove the caller's link to this patient. Plans and sessions are kept."""
+    # Any link of the caller's, also one to a user made a therapist since, which the
+    # list leaves out: removing a leftover link shows nothing.
     link = get_link(db, therapist.id, patient_id)
     if link is None:
         # Also another therapist's patient: 404, so it doesn't say who is linked.
