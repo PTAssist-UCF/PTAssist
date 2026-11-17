@@ -5,7 +5,11 @@
 
 export const MIN_VIDEO_SECONDS = 3;
 export const MAX_VIDEO_SECONDS = 120;
-export const MAX_VIDEO_UPLOAD_BYTES = 1073741824; // 1 GiB (1024 * 1024 * 1024)
+// The API's upload limit: MAX_VIDEO_UPLOAD_BYTES in backend/app/config.py. Change both
+// together; backend/tests/test_config.py checks that they match.
+export const MAX_VIDEO_UPLOAD_BYTES = 524288000; // 500 MiB (500 * 1024 * 1024)
+// The limit as the page shows it, in MB of 1024 * 1024 bytes like formatFileSize.
+export const MAX_VIDEO_UPLOAD_TEXT = `${MAX_VIDEO_UPLOAD_BYTES / (1024 * 1024)} MB`;
 
 export const ALLOWED_EXTENSIONS = ['.mp4', '.mov', '.webm'] as const;
 export const ALLOWED_MIME_TYPES = ['video/mp4', 'video/quicktime', 'video/webm'] as const;
@@ -33,7 +37,8 @@ export function checkFileConstraints(file: File | null | undefined): ValidationR
   if (file.size > MAX_VIDEO_UPLOAD_BYTES) {
     return {
       valid: false,
-      error: 'Video exceeds the 1 GiB limit. Please record a shorter or lower-resolution video.',
+      // The same words as the API's 413 (too_large_message in backend/app/uploads.py).
+      error: `Video exceeds the ${MAX_VIDEO_UPLOAD_TEXT} limit. Please record a shorter or lower-resolution video.`,
     };
   }
 

@@ -157,7 +157,7 @@ describe('UploadPage', () => {
     expect(uploadButton.hasAttribute('disabled')).toBe(true);
   });
 
-  it('validates file size on client-side and prevents upload of files > 1 GiB', async () => {
+  it('validates file size on client-side and prevents upload of files > 500 MB', async () => {
     renderPage([SQUAT_UPLOAD]);
 
     const largeFile = new File(['content'], 'oversized.mp4', { type: 'video/mp4' });
@@ -166,7 +166,7 @@ describe('UploadPage', () => {
     });
     await chooseVideo(largeFile);
 
-    expect(await screen.findByText(/exceeds the 1 GiB limit/i)).toBeDefined();
+    expect(await screen.findByText(/exceeds the 500 MB limit/i)).toBeDefined();
     const uploadButton = screen.getByRole('button', { name: 'Upload Video' });
     expect(uploadButton.hasAttribute('disabled')).toBe(true);
   });

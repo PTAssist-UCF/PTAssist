@@ -1,6 +1,7 @@
 """Uploads use synthetic clips, real ffprobe, PostgreSQL, and private Azurite."""
 
 import logging
+import os
 import subprocess
 import uuid
 from functools import cache
@@ -166,18 +167,35 @@ def test_duration_boundaries_are_accepted(
     assert response.status_code == 201, response.text
 
 
+@pytest.mark.parametrize("extension", [".mp4", ".mov", ".webm"])
 @pytest.mark.parametrize(
     "seconds,error",
     [(MIN_VIDEO_SECONDS - 0.1, "too_short"), (MAX_VIDEO_SECONDS + 0.1, "too_long")],
 )
 def test_duration_outside_contract_is_rejected_without_session_or_upload(
-    client, clerk, assignment, db, storage, make_video, monkeypatch, seconds, error
+    client,
+    clerk,
+    assignment,
+    db,
+    storage,
+    make_video,
+    monkeypatch,
+    seconds,
+    error,
+    extension,
 ):
     def upload(*args):
         pytest.fail("Rejected video must not be stored")
 
     monkeypatch.setattr(storage, "upload", upload)
-    response = post_video(client, clerk, assignment, make_video(seconds=seconds))
+    response = post_video(
+        client,
+        clerk,
+        assignment,
+        make_video(extension, seconds),
+        "exercise" + extension,
+        uploads.VIDEO_TYPES[extension],
+    )
     assert response.status_code == 422
     assert response.json()["detail"] == ERROR_MESSAGES[error]
     assert sessions_count(db) == 0
@@ -188,7 +206,10 @@ def test_duration_outside_contract_is_rejected_without_session_or_upload(
     [
         ("exercise.txt", "video/mp4", b"not video", 415),
         ("exercise.mp4", "text/html", b"not video", 415),
-        ("exercise.mp4", "video/mp4", b"not video", 422),
+        # Not a video at all, by its first bytes.
+        ("exercise.mp4", "video/mp4", b"not video", 415),
+        # Starts like an MP4, but ffprobe can't read it.
+        ("exercise.mp4", "video/mp4", b"\x00\x00\x00\x18ftypisom" + b"\x00" * 64, 422),
         ("exercise.mp4", "video/mp4", b"", 422),
     ],
 )
@@ -209,6 +230,31 @@ def test_wrong_type_or_unreadable_file_is_rejected(
     )
     response = post_video(client, clerk, assignment, contents, filename, mime)
     assert response.status_code == status
+    assert sessions_count(db) == 0
+
+
+@pytest.mark.parametrize(
+    "contents,filename,mime",
+    [
+        (b"\x89PNG\r\n\x1a\n" + b"\x00" * 64, "exercise.mp4", "video/mp4"),
+        (b"%PDF-1.7\n%synthetic document", "exercise.mov", "video/quicktime"),
+        (b"<!DOCTYPE html><title>synthetic</title>", "exercise.webm", "video/webm"),
+    ],
+)
+def test_renamed_non_video_file_is_refused_before_inspection(
+    client, clerk, assignment, db, storage, monkeypatch, contents, filename, mime
+):
+    """A photo, document, or web page with a video's name and type is refused by its
+    first bytes, before the API copies it or ffprobe reads it."""
+    monkeypatch.setattr(
+        uploads, "_probe", lambda path: pytest.fail("No inspection expected")
+    )
+    monkeypatch.setattr(
+        storage, "upload", lambda *args: pytest.fail("No upload expected")
+    )
+    response = post_video(client, clerk, assignment, contents, filename, mime)
+    assert response.status_code == 415
+    assert response.json()["detail"] == uploads.WRONG_TYPE
     assert sessions_count(db) == 0
 
 
@@ -284,6 +330,28 @@ def test_size_is_checked_on_the_actual_file(
     monkeypatch.setattr(uploads, "MAX_VIDEO_UPLOAD_BYTES", len(contents) - 1)
     response = post_video(client, clerk, assignment, contents)
     assert response.status_code == 413
+    assert response.json()["detail"] == uploads.too_large_message()
+    assert sessions_count(db) == 0
+
+
+def test_oversized_upload_is_refused_while_it_arrives(
+    client, clerk, assignment, db, storage, monkeypatch
+):
+    """Past the limit plus room for the rest of the form, the API stops reading: the
+    route, the video checks, and storage never see the upload. tests/test_uploads.py
+    shows how little of it is read."""
+    monkeypatch.setattr(uploads, "MAX_VIDEO_UPLOAD_BYTES", 4096)
+    monkeypatch.setattr(uploads, "FORM_OVERHEAD_BYTES", 1024)
+    monkeypatch.setattr(
+        "app.routes.sessions.validate_video",
+        lambda *args: pytest.fail("No inspection expected"),
+    )
+    monkeypatch.setattr(
+        storage, "upload", lambda *args: pytest.fail("No upload expected")
+    )
+    response = post_video(client, clerk, assignment, b"\x00" * (4096 + 1024 + 1))
+    assert response.status_code == 413
+    assert response.json()["detail"] == uploads.too_large_message()
     assert sessions_count(db) == 0
 
 
@@ -498,6 +566,35 @@ def test_upload_schedules_the_analysis_once_the_session_is_saved(
     response = post_video(client, clerk, assignment, make_video())
     assert response.status_code == 201
     assert scheduled == [(uuid.UUID(response.json()["id"]), "processing", True)]
+
+
+def test_stored_name_is_the_session_id_never_the_file_name(
+    client, clerk, assignment, db, storage, blob_service, make_video, monkeypatch
+):
+    """The patient's file name is used only for its extension. The blob, and the
+    copy ffprobe inspects, are named by ids the API makes."""
+    filename = "../../Jane Doe's squat (1).MP4"
+    inspected = []
+    original_probe = uploads._probe
+
+    def probe(path):
+        inspected.append(str(path))
+        return original_probe(path)
+
+    monkeypatch.setattr(uploads, "_probe", probe)
+    response = post_video(client, clerk, assignment, make_video(), filename)
+    assert response.status_code == 201, response.text
+    session_id = uuid.UUID(response.json()["id"])
+    assert session_id.version == 4  # random
+    saved = db.get(ExerciseSession, session_id)
+    assert saved.video_key == f"sessions/{session_id}.mp4"
+    container = blob_service.get_container_client(os.environ["STORAGE_CONTAINER"])
+    names = [blob.name for blob in container.list_blobs()]
+    assert saved.video_key in names
+    assert [name for name in names if "Jane" in name or ".." in name] == []
+    [path] = inspected
+    assert "Jane" not in path
+    assert ".." not in path
 
 
 def test_filename_and_video_details_are_not_logged(

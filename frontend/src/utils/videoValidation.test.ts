@@ -24,15 +24,17 @@ describe('videoValidation', () => {
       expect(result.error).toContain("couldn't open your video");
     });
 
-    it('rejects file larger than 1 GiB', () => {
+    it('rejects file larger than 500 MB, with the API message', () => {
       const largeFile = new File(['x'], 'large.mp4', { type: 'video/mp4' });
       Object.defineProperty(largeFile, 'size', { value: MAX_VIDEO_UPLOAD_BYTES + 1 });
       const result = checkFileConstraints(largeFile);
       expect(result.valid).toBe(false);
-      expect(result.error).toContain('1 GiB limit');
+      expect(result.error).toBe(
+        'Video exceeds the 500 MB limit. Please record a shorter or lower-resolution video.',
+      );
     });
 
-    it('accepts file equal to 1 GiB', () => {
+    it('accepts file equal to 500 MB', () => {
       const validFile = new File(['x'], 'exact.mp4', { type: 'video/mp4' });
       Object.defineProperty(validFile, 'size', { value: MAX_VIDEO_UPLOAD_BYTES });
       expect(checkFileConstraints(validFile).valid).toBe(true);

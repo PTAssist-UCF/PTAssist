@@ -28,7 +28,9 @@ STORAGE_CONTAINER = os.environ.get("STORAGE_CONTAINER") or "videos"
 # 500 MiB fits two-minute 1080p phone recordings. While an upload is checked, the API
 # holds it on temporary disk twice (the received file and an inspection copy), and
 # Azure Container Apps gives a container only a few GiB of it. Duration is still capped
-# by the shared analysis contract, independent of this byte limit.
+# by the shared analysis contract, independent of this byte limit. The API stops
+# reading an upload that passes this limit (app/uploads.py). The web app has its own
+# copy in frontend/src/utils/videoValidation.ts: change both together.
 MAX_VIDEO_UPLOAD_BYTES = int(os.environ.get("MAX_VIDEO_UPLOAD_BYTES", 500 * 1024**2))
 if MAX_VIDEO_UPLOAD_BYTES <= 0:
     raise ValueError("MAX_VIDEO_UPLOAD_BYTES must be positive")
