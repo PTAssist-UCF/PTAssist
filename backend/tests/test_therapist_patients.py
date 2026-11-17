@@ -179,6 +179,37 @@ def test_list_shows_only_the_callers_own_links(client, clerk, db, users) -> None
     assert [patient["id"] for patient in theirs.json()] == [str(users["other_pat"].id)]
 
 
+def test_list_leaves_out_a_linked_user_who_is_no_longer_a_patient(
+    client, clerk, db, users
+) -> None:
+    """A role change with --force keeps the link, but a linked user made a therapist
+    leaves the list, as their data does (README, decision 8). They come back if they
+    are made a patient again."""
+    add_link(db, users["ther"], users["pat"])
+    add_link(db, users["ther"], users["other_pat"])
+    therapist = clerk.headers("user_ther")
+
+    users["pat"].role = Role.THERAPIST
+    db.commit()
+    promoted = client.get("/therapist/patients", headers=therapist)
+    users["pat"].role = Role.PATIENT
+    db.commit()
+    demoted = client.get("/therapist/patients", headers=therapist)
+
+    assert promoted.status_code == 200
+    assert [patient["id"] for patient in promoted.json()] == [
+        str(users["other_pat"].id)
+    ]
+    assert links(db) == {
+        (users["ther"].id, users["pat"].id),
+        (users["ther"].id, users["other_pat"].id),
+    }
+    assert [patient["id"] for patient in demoted.json()] == [
+        str(users["other_pat"].id),
+        str(users["pat"].id),
+    ]
+
+
 def test_unlinking_removes_only_the_link(client, clerk, db, users) -> None:
     """The plan and its sessions stay (results are kept), but the therapist no longer
     sees them, because therapists see only linked patients' data."""

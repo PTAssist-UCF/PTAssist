@@ -31,6 +31,7 @@ import {
   formatFileSize,
   MIN_VIDEO_SECONDS,
   MAX_VIDEO_SECONDS,
+  MAX_VIDEO_UPLOAD_TEXT,
 } from '@/utils/videoValidation';
 import PlanStatus from './PlanStatus';
 import { describeFrequency, describeTarget, uploadPath } from './planDisplay';
@@ -521,7 +522,7 @@ function UploadForm({
 
                   <Text size="xs" c="dimmed">
                     Accepted formats: MP4, MOV, WebM • Length: {MIN_VIDEO_SECONDS}s to{' '}
-                    {MAX_VIDEO_SECONDS / 60}m • Max size: 1 GiB
+                    {MAX_VIDEO_SECONDS / 60}m • Max size: {MAX_VIDEO_UPLOAD_TEXT}
                   </Text>
                 </Stack>
               </Paper>

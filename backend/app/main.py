@@ -20,6 +20,7 @@ from app.routes import (
     sessions,
     therapist_patients,
 )
+from app.uploads import UploadSizeLimitMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,10 @@ app = FastAPI(
     generate_unique_id_function=operation_id_from_function_name,
     lifespan=lifespan,
 )
+
+# Stops reading an upload once it passes the size limit (app/uploads.py). Added before
+# CORS, so CORS wraps it, and the web app can read the 413 it answers.
+app.add_middleware(UploadSizeLimitMiddleware)
 
 # Browser access (CORS). The web app runs on a different origin than the API
 # (http://localhost:5173 locally, the Static Web Apps URL in Azure), so a browser only

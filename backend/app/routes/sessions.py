@@ -24,6 +24,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.auth.current_user import CurrentUser
+from app.auth.ownership import can_see_patient
 from app.db import get_db
 from app.jobs.analysis import analyze_session
 from app.jobs.stuck_sessions import fail_stuck_sessions
@@ -33,7 +34,6 @@ from app.models import (
     PlanExercise,
     Role,
     SessionStatus,
-    TherapistPatient,
 )
 from app.schemas.session import SessionResponse
 from app.storage.blob import Storage, get_storage
@@ -148,24 +148,18 @@ def create_session(
 def get_session(
     session_id: uuid.UUID, user: CurrentUser, db: Database
 ) -> SessionResponse:
-    query = (
-        select(ExerciseSession)
-        .join(PlanExercise)
-        .join(Plan)
+    row = db.execute(
+        select(ExerciseSession, Plan.patient_id)
+        .join(ExerciseSession.plan_exercise)
+        .join(PlanExercise.plan)
         .where(ExerciseSession.id == session_id)
-    )
-    if user.role == Role.PATIENT:
-        query = query.where(Plan.patient_id == user.id)
-    elif user.role == Role.THERAPIST:
-        linked_patients = select(TherapistPatient.patient_id).where(
-            TherapistPatient.therapist_id == user.id
-        )
-        query = query.where(Plan.patient_id.in_(linked_patients))
-    else:
-        raise HTTPException(403, "Unsupported user role")
-    session = db.scalar(query)
-    if session is None:
+    ).one_or_none()
+    # Another patient's session, an unlinked therapist, or a linked user who is no
+    # longer a patient: the same 404 as an unknown id. can_see_patient is the rule of
+    # every route both roles call, the session's result included (SCRUM-68).
+    if row is None or not can_see_patient(db, user, row.patient_id):
         raise HTTPException(404, "Session not found")
+    session = row.ExerciseSession
     if session.status == SessionStatus.PROCESSING:
         # Failed now if it is stuck (app/jobs/stuck_sessions.py), so the page polling
         # it stops waiting. The commit expires the session, so it is read again below.

@@ -126,6 +126,8 @@ In Docker Compose, run it in the `api` container: `docker compose exec api pytho
 
 Steps 1 and 2 are the `CurrentUser` dependency (see Sign-in). For step 3, a therapist-only route takes `CurrentTherapist` instead, from the same file: it answers `403` to anyone who is not a therapist. For step 4, `get_link` in `app/auth/ownership.py` returns a therapist's link to a patient, or `None` when they are not linked. Routes that both roles call use `can_see_patient` from the same file instead: the role decides the rule (a patient may see only their own data, a therapist only the data of linked users who are still patients), so a request outside it is `404`, not `403` (see Sessions, results, and progress).
 
+`tests/test_permissions.py` checks these steps on every route, with a row for each (see Testing).
+
 Roles live in our database, not in Clerk. Therapists are promoted by the team with a script (see Promote a therapist).
 
 ## Sign-in (Clerk)
@@ -261,7 +263,7 @@ A therapist links a patient by the email the patient signed in with, and then se
 | Endpoint | Does | Success |
 | --- | --- | --- |
 | `POST /therapist/patients` with `{"email": "..."}` | Links the patient who uses that email | `201` with the linked patient |
-| `GET /therapist/patients` | Lists the caller's linked patients, ordered by email | `200` with a list (empty if none) |
+| `GET /therapist/patients` | Lists the users the caller is linked to who are still patients, ordered by email | `200` with a list (empty if none) |
 | `DELETE /therapist/patients/{patient_id}` | Removes the caller's link to that patient | `204`, no body |
 
 A linked patient is `{"id", "email", "linked_at"}`: the patient's user id (the `patient_id` to unlink), their email, and when this therapist linked them.
@@ -271,6 +273,7 @@ A linked patient is `{"id", "email", "linked_at"}`: the patient's user id (the `
 - **An email that two patients use gets `409`.** Our copy of an email is never updated (see Sign-in), so an old user row can share its email with a newer one. The API never guesses which patient is meant; the team fixes the data.
 - **A patient can have several therapists.** Each therapist sees only their own links.
 - **Unlinking removes only the link.** A patient the caller is not linked to (an unknown id, or another therapist's patient) gets `404`, not `403`, so the answer doesn't tell who is linked to whom. Plans, sessions, and results are kept (results are never deleted). The therapist just stops seeing them, because every therapist check goes through the link, and sees them again after linking the patient again. The patient keeps their plan, and still sees it and uploads to it (see [Plan decisions](#plan-decisions)).
+- **A linked user who is made a therapist leaves the list.** A role change with `--force` keeps the link (see Promote a therapist), but the list leaves them out, the same rule as for their data (decision 8 in Sessions, results, and progress). They come back if they are made a patient again. Unlinking is unchanged: it removes any link of the caller's, also one the list no longer shows, and removing it shows nothing.
 
 | Status | When |
 | --- | --- |
@@ -348,20 +351,24 @@ Decided in SCRUM-63. Each one says why, and what to change if we change our mind
 Send the Clerk token in `Authorization: Bearer <token>`. The route accepts patients
 only (`403` for therapists). A missing assignment or another patient's assignment
 returns `404`, before inspecting media or writing a blob. Filenames are never used
-as storage keys: the API generates a UUID and stores `sessions/<uuid>.<extension>`.
+as storage keys: the API generates a UUID and stores `sessions/<uuid>.<extension>`
+(see [Upload limits](#upload-limits-scrum-82)).
 
 Validation checks the actual uploaded size, not a caller's size claim. The default
 limit is **500 MiB** (`MAX_VIDEO_UPLOAD_BYTES=524288000`), which fits two-minute
 1080p phone recordings. 4K recordings may exceed it: record at 1080p, or raise the
 limit deliberately (mind the temporary disk, below). FastAPI spools multipart
-files to temporary disk; this check happens after multipart parsing, not as a
-network/request-body rate or size guard. Infrastructure limits and further upload
-hardening belong to SCRUM-82. While it checks an upload, the API holds about twice
+files to temporary disk before the route runs, so the API also counts an upload
+while it arrives and stops reading it at the limit (see
+[Upload limits](#upload-limits-scrum-82)). While it checks an upload, the API holds about twice
 its size on temporary disk (the spooled file plus an inspection copy), and Azure
 Container Apps gives a container only about 1-4 GiB of it, depending on its CPU
 size. A higher limit leaves room for fewer uploads at once. Neither copy is kept
 after the request.
 
+Before inspection, the file's first bytes must be those of an MP4, MOV, or WebM
+video, of the type its extension names, so a renamed photo or document is refused
+(`415`) without being copied or inspected.
 `ffprobe` inspects the actual media container and checks for a video stream (audio
 and cover art alone do not count). The inspected type must match the extension:
 `.webm` for WebM, and `.mp4` or `.mov` for the MP4/QuickTime family, which phones
@@ -384,8 +391,8 @@ decoding or pose analysis; the AI service retains its own input checks.
 | `403` | The signed-in user cannot upload in their role |
 | `404` | Assignment is missing or not owned by this patient |
 | `409` | A therapist took the exercise out of the plan while the video was uploading. The stored video is deleted, and the message asks the patient to refresh their plan |
-| `413` | File exceeds `MAX_VIDEO_UPLOAD_BYTES` |
-| `415` | Unsupported declared type/extension or inspected format mismatch |
+| `413` | The video exceeds `MAX_VIDEO_UPLOAD_BYTES`, or the request exceeds it plus 1 MiB (checked while it arrives) |
+| `415` | Unsupported declared type/extension, first bytes that are not an MP4, MOV, or WebM video, or a format that does not match the extension |
 | `422` | Invalid form, empty/unreadable media, no video, or duration outside the shared limits |
 | `503` | Inspection tool unavailable or timed out, or upload/database write failed |
 
@@ -421,7 +428,9 @@ Both the `201` acknowledgement and `GET /sessions/{session_id}` return:
 | `created_at` | Time with timezone | When the session was created |
 
 Status is visible to the owning patient and therapists currently linked to that
-patient. Other patients, unlinked therapists, and unknown IDs receive `404`.
+patient, as long as the owner is still a patient (`can_see_patient`, the same rule as
+the session's result). Other patients, unlinked therapists, a linked user who is no
+longer a patient, and unknown IDs receive `404`.
 Reading the status of a session stuck in `processing` saves it as failed first, so
 the answer already says `failed` (see Stuck sessions).
 The response never exposes a private storage key or a signed video URL. Results
@@ -449,7 +458,82 @@ exercise UUID, choose a video, and execute. Use the returned `id` in the GET rou
 directory with ffmpeg (no recordings are committed). It exercises real ffprobe,
 Postgres, and Azurite for uploads, permission checks, duration boundaries, private
 retrieval, rollback cleanup, and that no database connection is held while a video
-is checked and stored. `tests/test_uploads.py` covers inspection errors.
+is checked and stored. `tests/test_uploads.py` covers the size limit while an upload
+arrives, the first-bytes check, and inspection errors.
+
+## Upload limits (SCRUM-82)
+
+The API's own checks on `POST /sessions`, so a client that skips the web app's
+checks still can't store anything but a short video under a random name, or fill the
+API's disk. In the order they run:
+
+| Check | Where | Answer |
+| --- | --- | --- |
+| The request's size, while it arrives: at most `MAX_VIDEO_UPLOAD_BYTES` plus 1 MiB for the rest of the form | `UploadSizeLimitMiddleware` in `app/uploads.py` | `413` |
+| Sign-in, role, and an assignment of the patient's own | `app/routes/sessions.py` | `401`, `403`, `404` |
+| The extension (`.mp4`, `.mov`, `.webm`) and the declared content type | `validate_video` in `app/uploads.py` | `415` |
+| The received video's size: at most `MAX_VIDEO_UPLOAD_BYTES`, and not empty | `validate_video` | `413`, `422` |
+| The first bytes: an MP4 or QuickTime box, or WebM's EBML header, of the type the extension names | `validate_video` | `415` |
+| The container, a video stream, and the length (`MIN_VIDEO_SECONDS` to `MAX_VIDEO_SECONDS`, 3 to 120 seconds), read by ffprobe | `validate_video` | `415`, `422` |
+| Stored as `sessions/<session id><extension>`: a new random UUID and the inspected container's extension | `app/routes/sessions.py` | `201` |
+
+Each `413` and `415` has a sentence in `detail` that the web app can show. The size
+message gives the limit in MB of 1024 * 1024 bytes, as the web app shows a file's
+size: "Video exceeds the 500 MB limit. Please record a shorter or lower-resolution
+video."
+
+The web app checks the size, types, and length before it uploads
+(`frontend/src/utils/videoValidation.ts`), so its users get the answer without
+sending the video. What these checks don't cover: after a `413`, the server still
+reads and throws away whatever the client keeps sending (none of it is stored), and
+a client that sends very slowly keeps its connection open. Limits on connections and
+request rates belong in front of the API (the Container Apps ingress).
+
+### Upload decisions
+
+Decided in SCRUM-82. Each one says why, and what to change if we change our minds.
+
+1. **The size limit is enforced while the upload arrives, before sign-in.** A
+   `Content-Length` over the limit is answered `413` before any of the body is read.
+   A body sent without one (chunked) is counted as it arrives: past the limit the API
+   stops reading, answers `413`, and deletes what it had spooled. The whole request
+   counts, so extra files in the form count too. *Why:* FastAPI reads the whole form,
+   spooling files to temporary disk, before the route and its sign-in run, so without
+   this anyone could make the API write as much as they send. The middleware sits
+   inside CORS, so the web app can read the `413`. *To change:* set
+   `MAX_VIDEO_UPLOAD_BYTES` (see [Config](#config)); the middleware reads it too.
+2. **The request may be 1 MiB larger than the video.** *Why:* the form also carries
+   the plan exercise id, the file name, and the multipart headers. The web app sends
+   a few hundred bytes of them, and 1 MiB is also the most Starlette accepts in one
+   form field. So a video at the limit always gets through, and one a little over it
+   is refused by the exact check on the received file, with the same message. *To
+   change:* `FORM_OVERHEAD_BYTES` in `app/uploads.py`.
+3. **The first bytes are checked before ffprobe.** An MP4 or QuickTime file starts
+   with a box (`ftyp`, or `moov`, `mdat`, `free`, `skip`, `wide`, or `pnot` in older
+   QuickTime files), and WebM with the EBML header. *Why:* a renamed photo, document,
+   or web page is refused without being copied to disk or given to ffprobe, and the
+   answer asks for a video (`415`) instead of saying the video can't be read (`422`).
+   ffprobe still checks the whole container. *To change:* `MOV_FIRST_BOXES` and
+   `EBML_MAGIC` in `app/uploads.py`.
+4. **The length limits come from the analysis contract, not from a setting.** *Why:*
+   the AI service uses the same `MIN_VIDEO_SECONDS` and `MAX_VIDEO_SECONDS`
+   (`ai/app/analysis_contract.py`, copied to `app/schemas/analysis_contract.py`) and
+   reads at most `MAX_VIDEO_SECONDS` plus one second of a video, so a setting that
+   raised only the API's limit would let through videos the analysis can't use.
+   *To change:* edit the contract in `ai/app/analysis_contract.py`, then copy it as
+   that file says.
+5. **The user's file name is used only for its extension.** It is never part of a
+   storage key, a temporary file's name, or a log line. *Why:* a file name can hold
+   a path (`../`), a patient's name, or anything else a client sends. *To change:* to
+   show patients their file's name, store it in a new column, never in the key.
+
+`tests/test_uploads.py` covers the limit while an upload arrives (with and without a
+`Content-Length`, using a small limit) and the first-bytes check (photos, documents,
+web pages, and archives named as each video type). `tests/test_sessions.py` covers
+the same through the endpoint with real ffprobe: oversized, wrong-type, and renamed
+files, and videos of each type that are too short or too long, are refused and
+create no session, and a stored video's key is the session's UUID, never the file
+name.
 
 ## Background analysis (SCRUM-45)
 
@@ -598,7 +682,7 @@ Progress is a list with one entry (`ExerciseProgress`) per exercise, ordered by 
 5. **Progress has one point per complete session, grouped by exercise across plans, and leaves out exercises without one.** *Why:* only complete results have numbers, and the plan endpoints decide what is assigned (SCRUM-63). *To change:* `get_patient_progress` in `app/routes/results.py`.
 6. **Saved results go out as the contract's `AnalysisResult`, checked again with `AnalysisResult.model_validate`.** *Why:* the API description then has the real type, so the frontend's generated `AnalysisResult` can replace its temporary one (SCRUM-59), and a broken saved result fails loudly instead of reaching a screen. *To change:* nothing when the contract gains a field: these routes return it too.
 7. **No pagination.** *Why:* a proof of concept has few sessions per patient. *To change:* add query parameters to the list, such as `limit` and `before` (a time).
-8. **A therapist sees a linked user's data only while that user is a patient.** *Why:* a forced promotion keeps the link, but someone who is no longer a patient should not stay visible to their old therapists through a link nobody removed, and the plan endpoints (SCRUM-63) answer `404` in that case too. *To change:* `can_see_patient` in `app/auth/ownership.py`.
+8. **A therapist sees a linked user's data, and the user in their list of patients, only while that user is a patient.** *Why:* a forced promotion keeps the link, but someone who is no longer a patient should not stay visible to their old therapists through a link nobody removed, and the plan endpoints (SCRUM-63) answer `404` in that case too. Unlinking still removes such a link (see Linking patients). *To change:* `linked_patients` in `app/auth/ownership.py`, which `can_see_patient` and `GET /therapist/patients` use. The plan endpoints check the role themselves (`_find_linked_patient` in `app/routes/plans.py`).
 
 **Frontend handoff:** router tag `results` (`src/api/results.ts`); operation ids `list_patient_sessions`, `get_session_result`, and `get_patient_progress`. Regenerating the hooks (`npm run generate:api`) also brings the `AnalysisResult` type, with `RepResult` and `Issue`, which replaces the temporary type in `frontend/src/components/ResultView/types.ts` (SCRUM-59). `tests/test_results.py` covers each route with complete, failed, and processing sessions, the wrong owner, the wrong role, a role change on either side of a link, and no token, plus a result saved while the result route reads the session.
 
@@ -648,7 +732,7 @@ Read from environment variables (see `/.env.example`): database URL, Clerk setti
 | `CLERK_AUTHORIZED_PARTIES` | API | Web app origins, comma-separated. Tokens must come from one of them, and browsers may call the API only from them (CORS). Empty skips the token's origin check and blocks every browser, so set it everywhere |
 | `STORAGE_CONNECTION_STRING` | API | Storage account to use. `UseDevelopmentStorage=true` locally (Azurite on `127.0.0.1:10000`). In Azure, the storage account's connection string: it holds the account key, so it is a secret. See Storage |
 | `STORAGE_CONTAINER` | API | Private blob container for videos. Default `videos`. Created if missing |
-| `MAX_VIDEO_UPLOAD_BYTES` | API, Docker Compose | Maximum uploaded video size in bytes; positive integer, default 524288000 (500 MiB). The API needs about twice this in temporary disk space per upload being checked. Independent of the shared duration limits |
+| `MAX_VIDEO_UPLOAD_BYTES` | API, Docker Compose | Maximum uploaded video size in bytes; positive integer, default 524288000 (500 MiB). Checked while an upload arrives and again on the received file (see Upload limits). The API needs about twice this in temporary disk space per upload being checked. Independent of the shared duration limits. The web app has its own copy in `frontend/src/utils/videoValidation.ts`: change both together |
 | `AI_SERVICE_URL` | API | Where the background analysis sends `POST /analyze`. Default `http://localhost:8001`. Docker Compose sets `http://ai:8001`; in Azure, the AI container app's internal URL. See Background analysis |
 | `AI_SERVICE_TIMEOUT_SECONDS` | API | Seconds to wait for `POST /analyze` to answer before the session fails with `analysis_timed_out`. Positive number, default 230. In Azure keep it between 180 and 240 (see Session lifecycle) |
 | `STUCK_SESSION_CUTOFF_SECONDS` | API, Docker Compose | Seconds a session may stay `processing` after its upload before it is saved as failed with `analysis_timed_out`. Empty or unset: 30 more than the analysis can wait for the AI service (10 to connect plus `AI_SERVICE_TIMEOUT_SECONDS`), 270 by default. Must be longer than that wait, or the API does not start, and at most the web app's 300-second polling timeout. See Stuck sessions |
@@ -716,7 +800,7 @@ def test_example(client, clerk, ai_service) -> None:
     assert ai_service.requests[0]["exercise"] == "squat"  # what the job sent
 ```
 
-Every route needs a test that rejects the wrong role and the wrong owner.
+Every route needs a test that rejects the wrong role and the wrong owner. `tests/test_permissions.py` (SCRUM-68) has them for every route, in one grid. Each route's row says who may call it, and what the wrong role and the wrong owner get, or why nobody can be either. For each row, the grid checks that no token gets `401`, that each refused call gets the same answer as the same call about ids that don't exist and changes nothing in the database, and that the callers who may call it get through. `test_every_route_has_a_row` fails when a route has no row, so add one with each new route, as well as the route's own tests. A route that needs no token goes in `PUBLIC` instead, with the reason. Only `/health` and FastAPI's docs pages (`/openapi.json`, `/docs`, `/docs/oauth2-redirect`, and `/redoc`) are there.
 
 ## Pull request CI
 
