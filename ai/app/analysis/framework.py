@@ -6,8 +6,9 @@ video or know exercise-specific thresholds.
 
 import math
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from app.analysis_contract import AnalysisResult, Issue, RepResult
 
@@ -48,6 +49,15 @@ class HoldObservation(RepObservation):
 class RepWindow:
     start_seconds: float
     end_seconds: float
+
+
+def samples_in_window(samples: Iterable[Any], window: RepWindow) -> list[Any]:
+    """The samples (anything with a `time`) inside a rep, both ends included."""
+    return [
+        sample
+        for sample in samples
+        if window.start_seconds <= sample.time <= window.end_seconds
+    ]
 
 
 class RepSplitter:

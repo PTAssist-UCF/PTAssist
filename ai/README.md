@@ -24,6 +24,7 @@ app/
     smoothing.py        Time-based exponential smoothing with tracking-gap reset
     visibility.py       Required-joint checks and a mask preserving frame indices
     exercises/          One file per exercise
+      shoulder_abduction.py  Shoulder abduction: each arm's reps, paired into both
 tests/                  pytest tests. fixtures/ holds keypoint JSON test data
 Dockerfile              The service image: Python, ffmpeg, OpenCV, MediaPipe
 ```
@@ -341,7 +342,7 @@ If the video cannot be downloaded from `video_url`, or our own code raises an un
 ## Adding an exercise
 
 1. Write its spec in `docs/exercises/`, following the template in [`docs/exercises/README.md`](../docs/exercises/README.md): camera angle, key joints, whether it is done in reps or held, what counts as one rep (or when a hold ends), and whether reps have a side. For each form rule: its threshold, and an issue code with a message (what went wrong), a tip (what to do), and a penalty. Also any metrics it reports, each name ending with its unit. See [`docs/analysis-result.md`](../docs/analysis-result.md) for how these fit the result.
-2. Add a file in `app/analysis/exercises/` that follows the shared analyzer interface.
+2. Add a file in `app/analysis/exercises/` that follows the shared analyzer interface: `NAME`, `ISSUES` (an `IssueDefinition` per issue code), and `analyze(keypoints, analyzer_version)`, which takes the keypoint data above and returns an `AnalysisResult` built with the shared framework. `shoulder_abduction.py` is an example, and `tests/test_shoulder_abduction.py` shows how to test one with synthetic keypoints.
 3. Ask the backend team to add its name to the `Exercise` table, with a new Alembic migration (never by hand). The name is a plain string, so the contract does not change.
 4. Add labeled test clips and check it against the accuracy targets.
 5. Raise `ANALYZER_VERSION` in `app/main.py`. Raise it too whenever anything else that can change a result changes, such as thresholds, penalties, or the shared framework.
