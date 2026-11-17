@@ -126,6 +126,8 @@ In Docker Compose, run it in the `api` container: `docker compose exec api pytho
 
 Steps 1 and 2 are the `CurrentUser` dependency (see Sign-in). For step 3, a therapist-only route takes `CurrentTherapist` instead, from the same file: it answers `403` to anyone who is not a therapist. For step 4, `get_link` in `app/auth/ownership.py` returns a therapist's link to a patient, or `None` when they are not linked. Routes that both roles call use `can_see_patient` from the same file instead: the role decides the rule (a patient may see only their own data, a therapist only the data of linked users who are still patients), so a request outside it is `404`, not `403` (see Sessions, results, and progress).
 
+`tests/test_permissions.py` checks these steps on every route, with a row for each (see Testing).
+
 Roles live in our database, not in Clerk. Therapists are promoted by the team with a script (see Promote a therapist).
 
 ## Sign-in (Clerk)
@@ -421,7 +423,9 @@ Both the `201` acknowledgement and `GET /sessions/{session_id}` return:
 | `created_at` | Time with timezone | When the session was created |
 
 Status is visible to the owning patient and therapists currently linked to that
-patient. Other patients, unlinked therapists, and unknown IDs receive `404`.
+patient, as long as the owner is still a patient (`can_see_patient`, the same rule as
+the session's result). Other patients, unlinked therapists, a linked user who is no
+longer a patient, and unknown IDs receive `404`.
 The response never exposes a private storage key or a signed video URL. Results
 and progress have their own routes (see Sessions, results, and progress).
 
@@ -664,7 +668,7 @@ def test_example(client, clerk, ai_service) -> None:
     assert ai_service.requests[0]["exercise"] == "squat"  # what the job sent
 ```
 
-Every route needs a test that rejects the wrong role and the wrong owner.
+Every route needs a test that rejects the wrong role and the wrong owner. `tests/test_permissions.py` (SCRUM-68) has them for every route, in one grid. Each route's row says who may call it, and what the wrong role and the wrong owner get, or why nobody can be either. For each row, the grid checks that no token gets `401`, that each refused call gets the same answer as the same call about ids that don't exist and changes nothing in the database, and that the callers who may call it get through. `test_every_route_has_a_row` fails when a route has no row, so add one with each new route, as well as the route's own tests. A route that needs no token goes in `PUBLIC` instead, with the reason. Only `/health` and FastAPI's docs pages (`/openapi.json`, `/docs`, `/docs/oauth2-redirect`, and `/redoc`) are there.
 
 ## Pull request CI
 
