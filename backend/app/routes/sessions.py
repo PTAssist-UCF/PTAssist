@@ -1,6 +1,7 @@
 """Patient uploads and session status, scoped through the owning plan.
 
-A stored upload is handed to the background analysis (app/jobs/analysis.py).
+A stored upload is handed to the background analysis (app/jobs/analysis.py). Reading
+the status fails a session stuck in processing (app/jobs/stuck_sessions.py).
 """
 
 import contextlib
@@ -25,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.auth.current_user import CurrentUser
 from app.db import get_db
 from app.jobs.analysis import analyze_session
+from app.jobs.stuck_sessions import fail_stuck_sessions
 from app.models import (
     ExerciseSession,
     Plan,
@@ -164,4 +166,8 @@ def get_session(
     session = db.scalar(query)
     if session is None:
         raise HTTPException(404, "Session not found")
+    if session.status == SessionStatus.PROCESSING:
+        # Failed now if it is stuck (app/jobs/stuck_sessions.py), so the page polling
+        # it stops waiting. The commit expires the session, so it is read again below.
+        fail_stuck_sessions(db, [session.id])
     return SessionResponse.model_validate(session)

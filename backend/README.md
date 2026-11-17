@@ -20,7 +20,7 @@ app/
   models/    Database tables (SQLAlchemy). Base class in base.py
   auth/      Clerk token check, current user, role and ownership checks
   storage/   Video storage: upload, temporary read links, delete (Azurite locally, Azure Blob in the cloud)
-  jobs/      Background task that calls the AI service
+  jobs/      Background work: the analysis that calls the AI service, and the cleanup of stuck sessions
 migrations/  Alembic migrations (versions/ holds one file per migration)
 tests/
 alembic.ini  Alembic settings
@@ -215,11 +215,11 @@ upload -> processing -> complete
 2. A FastAPI background task (`app/jobs/analysis.py`, see [Background analysis](#background-analysis-scrum-45)) creates a 15-minute read link and calls the AI service `POST /analyze`.
 3. The result is checked against the contract and saved to `SessionResult`, and the session's status becomes the result's `status`: `complete` or `failed`, in the same transaction.
 4. If there is no valid result, the backend saves a failed result itself: `analysis_unavailable` when the AI service could not be reached, answered with an error, or sent a result that does not match the contract, and `analysis_timed_out` when it did not answer in time.
-5. Sessions stuck in `processing` too long are also saved as failed, with `analysis_timed_out` (SCRUM-66, not built yet).
+5. A session still `processing` `STUCK_SESSION_CUTOFF_SECONDS` after its upload (270 seconds by default) is stuck: it is saved as failed, with `analysis_timed_out`, when the API starts and when its status is read (see [Stuck sessions](#stuck-sessions-scrum-66)).
 
 A session's result is saved once: after a session is `complete` or `failed` it never changes, and a later answer for it is dropped.
 
-The AI service may take up to 3 minutes for a 2-minute clip, counting from a cold start. On Azure, Container Apps ends any HTTP request after 240 seconds, so the timeout in step 2 (`AI_SERVICE_TIMEOUT_SECONDS`, 230 seconds by default) must be between 3 and 4 minutes. The stuck cutoff in step 5 must be longer than that timeout, so the cleanup never fails a session the background task is still waiting on. See [Clip limits and timing](../docs/analysis-result.md#clip-limits-and-timing).
+The AI service may take up to 3 minutes for a 2-minute clip, counting from a cold start. On Azure, Container Apps ends any HTTP request after 240 seconds, so the timeout in step 2 (`AI_SERVICE_TIMEOUT_SECONDS`, 230 seconds by default) must be between 3 and 4 minutes. The stuck cutoff in step 5 must be longer than the background task can wait for the AI service, 10 seconds to connect plus that timeout, so the cleanup never fails a session the background task is still waiting on, and the frontend's polling timeout (300 seconds) must be at least the cutoff. See [Clip limits and timing](../docs/analysis-result.md#clip-limits-and-timing).
 
 The frontend polls the session status. Once it is `complete` or `failed`, the `SessionResult` has the details, including the failure reason (`GET /sessions/{session_id}/result`, see Sessions, results, and progress). Later, a job queue can replace the background task without changing the API.
 
@@ -422,6 +422,8 @@ Both the `201` acknowledgement and `GET /sessions/{session_id}` return:
 
 Status is visible to the owning patient and therapists currently linked to that
 patient. Other patients, unlinked therapists, and unknown IDs receive `404`.
+Reading the status of a session stuck in `processing` saves it as failed first, so
+the answer already says `failed` (see Stuck sessions).
 The response never exposes a private storage key or a signed video URL. Results
 and progress have their own routes (see Sessions, results, and progress).
 
@@ -483,9 +485,9 @@ FastAPI would otherwise keep it on disk until the analysis ends. The job:
 The backend's own failures are `AnalysisResult.failed(code, analyzer_version=None)`,
 so they meet the contract and carry the standard patient message. Every path ends
 `complete` or `failed`, except one: if the database itself can't be reached, nothing
-can be saved, and the session stays `processing` until the stuck-session cleanup
-(SCRUM-66). The same happens if the API container stops during an analysis (a deploy,
-or scaling in).
+can be saved, and the session stays `processing` until the cleanup of stuck
+sessions fails it (next section). The same happens if the API container stops during
+an analysis (a deploy, or scaling in).
 
 Log lines carry only the session id and the outcome (such as "failed with
 analysis_timed_out: no answer in time"), never the read link, an exception's
@@ -502,6 +504,55 @@ a stub that returns made-up results, so a local upload ends `complete` with thos
 Tests never call the AI service: see Testing. `tests/test_analysis_job.py` covers
 each row above, a session that finishes during the call, and a job that runs twice.
 It uses real sockets for an AI service that is down or never answers.
+
+## Stuck sessions (SCRUM-66)
+
+`app/jobs/stuck_sessions.py` saves sessions stuck in `processing` as failed, with
+`AnalysisResult.failed("analysis_timed_out", analyzer_version=None)`, so the page
+polling one stops waiting. A session gets stuck when its background analysis can't
+save anything: the database can't be reached, or the API stops during the analysis (a
+deploy, scaling in, a crash).
+
+- **When a session is stuck:** it has been `processing` for longer than
+  `STUCK_SESSION_CUTOFF_SECONDS` since its upload (`created_at`), by the database's
+  clock. By default that is 30 seconds more than the analysis can wait for the AI
+  service (10 seconds to connect plus `AI_SERVICE_TIMEOUT_SECONDS`), so 270 seconds
+  with the default timeout. The 30 seconds cover the analysis's other steps, such as
+  making the read link and saving. The API refuses to start with a cutoff that is not
+  longer than that wait, so the cleanup never fails a session the analysis is still
+  waiting on. The web app gives up polling after 300 seconds (`POLL_TIMEOUT_MS` in
+  `frontend/src/hooks/useSessionStatus.ts`), which must stay at least the cutoff: a
+  cutoff over 300 seconds needs a frontend change too.
+- **When the API starts**, before it takes requests, it fails every stuck session,
+  such as the ones an API that stopped left behind (the `lifespan` in `app/main.py`).
+  If this fails, for example because the database can't be reached, the API logs the
+  error's type and starts anyway. Status reads then fail stuck sessions as usual.
+- **When a status is read**, the sessions about to be shown are failed if they are
+  stuck: `GET /sessions/{session_id}`, `GET /sessions/{session_id}/result`, and
+  `GET /patients/{patient_id}/sessions`. Only after the usual permission check, so a
+  `404` changes nothing. The answer already has the new status, and the result route
+  the `analysis_timed_out` result. Progress shows only complete sessions, so it has
+  nothing to fail. There is no timer: a stuck session nobody reads stays `processing`
+  until it is read or the API starts again.
+- **A result is saved once.** The cleanup locks the session's row
+  (`FOR UPDATE SKIP LOCKED`) and fails it only while it is still `processing`, as the
+  analysis does before it saves (Background analysis, step 3). A row that is locked
+  already is being finished at that moment, by the analysis or by another cleanup, so
+  the cleanup skips it instead of waiting. An answer from the AI service that arrives after the cleanup
+  is dropped, and an analysis that starts after it (one that waited for a free worker
+  thread, say) skips the session without calling the AI service.
+- **Logs:** one `WARNING` per failed session, with only its id ("Session <id> failed
+  with analysis_timed_out: stuck in processing").
+
+No migration: the sessions table already has the status and the upload time.
+
+`tests/test_stuck_sessions.py` saves sessions uploaded in the past, by the database's
+clock, so no test waits for the cutoff. It covers each route for the patient and the
+linked therapist, a session within the cutoff, finished sessions, the wrong owner and
+the wrong role, the start-up cleanup, an API that starts when that cleanup fails, an
+answer that arrives after the cleanup, and a cleanup that runs while the analysis
+saves its result. The `client` fixture does not run the API's start-up; `with
+TestClient(app):` does. `tests/test_config.py` checks the cutoff's default and limits.
 
 ## Sessions, results, and progress (SCRUM-64)
 
@@ -522,7 +573,7 @@ Read-only routes for a patient's history: their sessions, each session's analysi
 | `404` | Another patient's data, a patient the therapist is not linked to, a linked user who is no longer a patient, or an unknown id: all get the same answer, so it doesn't tell whether the patient or session exists |
 | `422` | The id in the path is not a UUID |
 
-A session in the list (`SessionSummary`) has `id`, `plan_exercise_id`, `status`, and `created_at`, as in `SessionResponse`, plus `exercise_name` (the exercise's name in the API, such as `squat`) and `exercise_display_name` (such as `Squat`). The result route (`SessionResultResponse`) answers with the same fields plus `result`: the saved `AnalysisResult`, described in [`docs/analysis-result.md`](../docs/analysis-result.md) (a failed one has the reason in `error_code` and `error_message`), or `null` while the session is `processing`. Once the session is `complete` or `failed`, `result` is set: the job saves the result and the status together, and the route reads both in one query, so an answer never pairs `processing` with a result.
+A session in the list (`SessionSummary`) has `id`, `plan_exercise_id`, `status`, and `created_at`, as in `SessionResponse`, plus `exercise_name` (the exercise's name in the API, such as `squat`) and `exercise_display_name` (such as `Squat`). The result route (`SessionResultResponse`) answers with the same fields plus `result`: the saved `AnalysisResult`, described in [`docs/analysis-result.md`](../docs/analysis-result.md) (a failed one has the reason in `error_code` and `error_message`), or `null` while the session is `processing`. Once the session is `complete` or `failed`, `result` is set: the job saves the result and the status together, and the route reads both in one query, so an answer never pairs `processing` with a result. The list and the result route fail a stuck session before they show it (see Stuck sessions).
 
 Progress is a list with one entry (`ExerciseProgress`) per exercise, ordered by `exercise_name`: `exercise_name`, `exercise_display_name`, `exercise_kind` (`reps`, or `hold` for the plank), and `sessions`, the chart's points, oldest first (`ProgressPoint`):
 
@@ -582,13 +633,13 @@ DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=${AZURITE_
 
 `AZURITE_ACCOUNT_KEY` is Azurite's well-known development key, published in Microsoft's Azurite documentation (the link is in `/.env.example`). It is not a real secret, but GitHub secret scanning flags it like any Azure storage key and may block the push, so it is not in the repo: each developer puts it in their own `/.env` (never committed). Without it the stack still starts and `/health` works, but storage calls in the Compose API fail with "The storage connection string has no account key to sign read links".
 
-Compose sets the `api` service's other settings itself and takes only `CLERK_SECRET_KEY`, `CLERK_AUTHORIZED_PARTIES`, and `AZURITE_ACCOUNT_KEY` from `/.env`. The other values in `/.env`, such as `DATABASE_URL` and `STORAGE_CONNECTION_STRING` (`UseDevelopmentStorage=true`), are for running the API on your computer.
+Compose sets the `api` service's other settings itself and takes only `CLERK_SECRET_KEY`, `CLERK_AUTHORIZED_PARTIES`, `AZURITE_ACCOUNT_KEY`, `MAX_VIDEO_UPLOAD_BYTES`, `AI_SERVICE_TIMEOUT_SECONDS`, and `STUCK_SESSION_CUTOFF_SECONDS` from `/.env`. The other values in `/.env`, such as `DATABASE_URL` and `STORAGE_CONNECTION_STRING` (`UseDevelopmentStorage=true`), are for running the API on your computer.
 
 Read links made in Compose start with `http://azurite:10000/`. The AI service container can open them; your browser cannot, because only containers in the stack know the name `azurite`.
 
 ## Config
 
-Read from environment variables (see `/.env.example`): database URL, Clerk settings, storage settings, and the AI service's URL and timeout. No secrets in code. Settings are defined in `app/config.py`. Add new ones there and in `/.env.example`.
+Read from environment variables (see `/.env.example`): database URL, Clerk settings, storage settings, the AI service's URL and timeout, and the cutoff for stuck sessions. No secrets in code. Settings are defined in `app/config.py`. Add new ones there and in `/.env.example`.
 
 | Variable | Read by | What |
 | --- | --- | --- |
@@ -600,6 +651,7 @@ Read from environment variables (see `/.env.example`): database URL, Clerk setti
 | `MAX_VIDEO_UPLOAD_BYTES` | API, Docker Compose | Maximum uploaded video size in bytes; positive integer, default 524288000 (500 MiB). The API needs about twice this in temporary disk space per upload being checked. Independent of the shared duration limits |
 | `AI_SERVICE_URL` | API | Where the background analysis sends `POST /analyze`. Default `http://localhost:8001`. Docker Compose sets `http://ai:8001`; in Azure, the AI container app's internal URL. See Background analysis |
 | `AI_SERVICE_TIMEOUT_SECONDS` | API | Seconds to wait for `POST /analyze` to answer before the session fails with `analysis_timed_out`. Positive number, default 230. In Azure keep it between 180 and 240 (see Session lifecycle) |
+| `STUCK_SESSION_CUTOFF_SECONDS` | API, Docker Compose | Seconds a session may stay `processing` after its upload before it is saved as failed with `analysis_timed_out`. Empty or unset: 30 more than the analysis can wait for the AI service (10 to connect plus `AI_SERVICE_TIMEOUT_SECONDS`), 270 by default. Must be longer than that wait, or the API does not start, and at most the web app's 300-second polling timeout. See Stuck sessions |
 | `TEST_DATABASE_URL` | pytest | The test database. See Testing |
 | `TEST_STORAGE_CONNECTION_STRING` | pytest | The test storage, by default `UseDevelopmentStorage=true`. See Testing |
 | `AZURITE_ACCOUNT_KEY` | Docker Compose | Azurite's well-known key, for the `api` service's connection string. Not read by the API itself. See Storage in Docker Compose |

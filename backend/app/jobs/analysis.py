@@ -13,10 +13,11 @@ Every outcome is saved. Without a valid answer (the AI service can't be reached,
 with an error, sends something that doesn't match the contract, or doesn't answer within
 AI_SERVICE_TIMEOUT_SECONDS), the backend saves a failed result itself, so the AI service
 can never leave a session processing. Only a database that can't be reached at all stops
-the job from saving; the cleanup of sessions stuck in processing (SCRUM-66) covers that.
+the job from saving; the cleanup of sessions stuck in processing (SCRUM-66,
+app/jobs/stuck_sessions.py) covers that.
 
 A session's result is saved once: an answer for a session that is no longer processing
-is dropped.
+is dropped, for example one the cleanup failed while the job waited for the answer.
 
 The read link is a secret and results are health data, so log lines carry only the
 session id and the outcome, never an exception's message or the AI service's answer.
@@ -29,7 +30,11 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import AI_SERVICE_TIMEOUT_SECONDS, AI_SERVICE_URL
+from app.config import (
+    AI_SERVICE_CONNECT_TIMEOUT_SECONDS,
+    AI_SERVICE_TIMEOUT_SECONDS,
+    AI_SERVICE_URL,
+)
 from app.db import engine
 from app.models import (
     Exercise,
@@ -43,18 +48,13 @@ from app.storage.blob import get_storage
 
 logger = logging.getLogger(__name__)
 
-# Seconds to wait for a connection to the AI service. In Azure the connection goes to
-# the Container Apps ingress, which accepts it at once, even while the AI container
-# starts from zero. Only the answer can take long (AI_SERVICE_TIMEOUT_SECONDS).
-CONNECT_TIMEOUT_SECONDS = 10
-
 
 def ai_service_client() -> httpx.Client:
     """An HTTP client for the AI service. Tests replace it with a fake AI service."""
     return httpx.Client(
         base_url=AI_SERVICE_URL,
         timeout=httpx.Timeout(
-            AI_SERVICE_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS
+            AI_SERVICE_TIMEOUT_SECONDS, connect=AI_SERVICE_CONNECT_TIMEOUT_SECONDS
         ),
     )
 
@@ -161,7 +161,8 @@ def _store(session_id: uuid.UUID, result: AnalysisResult) -> bool:
                 .with_for_update()
             )
             if session is None or session.status != SessionStatus.PROCESSING:
-                # Finished meanwhile (or deleted). Its result is saved once: drop this.
+                # Finished meanwhile, for example failed by the cleanup of stuck
+                # sessions (or deleted). Its result is saved once: drop this.
                 logger.info(
                     "Analysis of session %s dropped: already finished", session_id
                 )

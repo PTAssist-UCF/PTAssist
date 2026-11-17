@@ -5,6 +5,10 @@ data, and a therapist only their linked patients' (can_see_patient). Anyone else
 404, the same answer as for an id that doesn't exist, so it never tells whether a
 patient or a session exists. Uploads, and the status the upload page polls, are in
 sessions.py.
+
+Like that status, the list and the result route fail the sessions they show that are
+stuck in processing (app/jobs/stuck_sessions.py), so no page shows a stuck session as
+processing. Progress shows only complete sessions, so it has nothing to fail.
 """
 
 import uuid
@@ -17,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.auth.current_user import CurrentUser
 from app.auth.ownership import can_see_patient
 from app.db import get_db
+from app.jobs.stuck_sessions import fail_stuck_sessions
 from app.models import (
     Exercise,
     ExerciseSession,
@@ -56,7 +61,7 @@ def list_patient_sessions(
     """The patient's sessions from all their plans, newest first, without results."""
     if not can_see_patient(db, user, patient_id):
         raise HTTPException(404, "Patient not found")
-    rows = db.execute(
+    query = (
         select(ExerciseSession, Exercise)
         .join(ExerciseSession.plan_exercise)
         .join(PlanExercise.plan)
@@ -65,6 +70,12 @@ def list_patient_sessions(
         # The id only keeps a fixed order for uploads made at the same instant.
         .order_by(ExerciseSession.created_at.desc(), ExerciseSession.id)
     )
+    rows = db.execute(query).all()
+    processing = [
+        session.id for session, _ in rows if session.status == SessionStatus.PROCESSING
+    ]
+    if processing and fail_stuck_sessions(db, processing):
+        rows = db.execute(query).all()  # read again, with the new statuses
     return [
         SessionSummary(**summary_fields(session, exercise))
         for session, exercise in rows
@@ -79,19 +90,25 @@ def get_session_result(
     # The status and the result in one query, so they agree: the analysis job can
     # save the result and the new status between two queries. LEFT OUTER JOIN gives
     # None for the result while the session is processing.
-    row = db.execute(
+    query = (
         select(ExerciseSession, Exercise, Plan.patient_id, SessionResult.result)
         .join(ExerciseSession.plan_exercise)
         .join(PlanExercise.plan)
         .join(PlanExercise.exercise)
         .outerjoin(ExerciseSession.result)
         .where(ExerciseSession.id == session_id)
-    ).one_or_none()
+    )
+    row = db.execute(query).one_or_none()
     # Another patient's session, an unlinked therapist, or a former patient's
     # therapist: the same 404 as an unknown id, as GET /sessions/{session_id} answers.
     if row is None or not can_see_patient(db, user, row.patient_id):
         raise HTTPException(404, "Session not found")
     session, exercise, _, saved = row
+    if session.status == SessionStatus.PROCESSING and fail_stuck_sessions(
+        db, [session.id]
+    ):
+        # It was stuck, and is failed now: read it again, with its new result.
+        session, exercise, _, saved = db.execute(query).one()
     # Checked against the contract on the way out, as it was before it was saved.
     result = None if saved is None else AnalysisResult.model_validate(saved)
     return SessionResultResponse(**summary_fields(session, exercise), result=result)
