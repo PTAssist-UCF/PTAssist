@@ -1,11 +1,16 @@
 """Settings in app/config.py: defaults and checks, as the API reads them at start-up."""
 
+import re
 import runpy
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 import app.config
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+WEB_APP_VIDEO_CHECKS = REPO_ROOT / "frontend" / "src" / "utils" / "videoValidation.ts"
 
 
 def read_settings() -> dict[str, Any]:
@@ -19,6 +24,19 @@ def test_upload_limit_defaults_to_500_mib(monkeypatch: pytest.MonkeyPatch) -> No
     twice the upload while it is checked."""
     monkeypatch.delenv("MAX_VIDEO_UPLOAD_BYTES", raising=False)
     assert read_settings()["MAX_VIDEO_UPLOAD_BYTES"] == 500 * 1024**2
+
+
+def test_web_app_checks_the_same_upload_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The web app refuses a larger file before uploading it, with the API's 413
+    message, so its copy of the limit must be the default here. Change both together."""
+    monkeypatch.delenv("MAX_VIDEO_UPLOAD_BYTES", raising=False)
+    [web_app_limit] = re.findall(
+        r"export const MAX_VIDEO_UPLOAD_BYTES = (\d+);",
+        WEB_APP_VIDEO_CHECKS.read_text(),
+    )
+    assert int(web_app_limit) == read_settings()["MAX_VIDEO_UPLOAD_BYTES"]
 
 
 @pytest.mark.parametrize("value", ["0", "-1"])
