@@ -348,20 +348,24 @@ Decided in SCRUM-63. Each one says why, and what to change if we change our mind
 Send the Clerk token in `Authorization: Bearer <token>`. The route accepts patients
 only (`403` for therapists). A missing assignment or another patient's assignment
 returns `404`, before inspecting media or writing a blob. Filenames are never used
-as storage keys: the API generates a UUID and stores `sessions/<uuid>.<extension>`.
+as storage keys: the API generates a UUID and stores `sessions/<uuid>.<extension>`
+(see [Upload limits](#upload-limits-scrum-82)).
 
 Validation checks the actual uploaded size, not a caller's size claim. The default
 limit is **500 MiB** (`MAX_VIDEO_UPLOAD_BYTES=524288000`), which fits two-minute
 1080p phone recordings. 4K recordings may exceed it: record at 1080p, or raise the
 limit deliberately (mind the temporary disk, below). FastAPI spools multipart
-files to temporary disk; this check happens after multipart parsing, not as a
-network/request-body rate or size guard. Infrastructure limits and further upload
-hardening belong to SCRUM-82. While it checks an upload, the API holds about twice
+files to temporary disk before the route runs, so the API also counts an upload
+while it arrives and stops reading it at the limit (see
+[Upload limits](#upload-limits-scrum-82)). While it checks an upload, the API holds about twice
 its size on temporary disk (the spooled file plus an inspection copy), and Azure
 Container Apps gives a container only about 1-4 GiB of it, depending on its CPU
 size. A higher limit leaves room for fewer uploads at once. Neither copy is kept
 after the request.
 
+Before inspection, the file's first bytes must be those of an MP4, MOV, or WebM
+video, of the type its extension names, so a renamed photo or document is refused
+(`415`) without being copied or inspected.
 `ffprobe` inspects the actual media container and checks for a video stream (audio
 and cover art alone do not count). The inspected type must match the extension:
 `.webm` for WebM, and `.mp4` or `.mov` for the MP4/QuickTime family, which phones
@@ -384,8 +388,8 @@ decoding or pose analysis; the AI service retains its own input checks.
 | `403` | The signed-in user cannot upload in their role |
 | `404` | Assignment is missing or not owned by this patient |
 | `409` | A therapist took the exercise out of the plan while the video was uploading. The stored video is deleted, and the message asks the patient to refresh their plan |
-| `413` | File exceeds `MAX_VIDEO_UPLOAD_BYTES` |
-| `415` | Unsupported declared type/extension or inspected format mismatch |
+| `413` | The video exceeds `MAX_VIDEO_UPLOAD_BYTES`, or the request exceeds it plus 1 MiB (checked while it arrives) |
+| `415` | Unsupported declared type/extension, first bytes that are not an MP4, MOV, or WebM video, or a format that does not match the extension |
 | `422` | Invalid form, empty/unreadable media, no video, or duration outside the shared limits |
 | `503` | Inspection tool unavailable or timed out, or upload/database write failed |
 
@@ -447,7 +451,82 @@ exercise UUID, choose a video, and execute. Use the returned `id` in the GET rou
 directory with ffmpeg (no recordings are committed). It exercises real ffprobe,
 Postgres, and Azurite for uploads, permission checks, duration boundaries, private
 retrieval, rollback cleanup, and that no database connection is held while a video
-is checked and stored. `tests/test_uploads.py` covers inspection errors.
+is checked and stored. `tests/test_uploads.py` covers the size limit while an upload
+arrives, the first-bytes check, and inspection errors.
+
+## Upload limits (SCRUM-82)
+
+The API's own checks on `POST /sessions`, so a client that skips the web app's
+checks still can't store anything but a short video under a random name, or fill the
+API's disk. In the order they run:
+
+| Check | Where | Answer |
+| --- | --- | --- |
+| The request's size, while it arrives: at most `MAX_VIDEO_UPLOAD_BYTES` plus 1 MiB for the rest of the form | `UploadSizeLimitMiddleware` in `app/uploads.py` | `413` |
+| Sign-in, role, and an assignment of the patient's own | `app/routes/sessions.py` | `401`, `403`, `404` |
+| The extension (`.mp4`, `.mov`, `.webm`) and the declared content type | `validate_video` in `app/uploads.py` | `415` |
+| The received video's size: at most `MAX_VIDEO_UPLOAD_BYTES`, and not empty | `validate_video` | `413`, `422` |
+| The first bytes: an MP4 or QuickTime box, or WebM's EBML header, of the type the extension names | `validate_video` | `415` |
+| The container, a video stream, and the length (`MIN_VIDEO_SECONDS` to `MAX_VIDEO_SECONDS`, 3 to 120 seconds), read by ffprobe | `validate_video` | `415`, `422` |
+| Stored as `sessions/<session id><extension>`: a new random UUID and the inspected container's extension | `app/routes/sessions.py` | `201` |
+
+Each `413` and `415` has a sentence in `detail` that the web app can show. The size
+message gives the limit in MB of 1024 * 1024 bytes, as the web app shows a file's
+size: "Video exceeds the 500 MB limit. Please record a shorter or lower-resolution
+video."
+
+The web app checks the size, types, and length before it uploads
+(`frontend/src/utils/videoValidation.ts`), so its users get the answer without
+sending the video. What these checks don't cover: after a `413`, the server still
+reads and throws away whatever the client keeps sending (none of it is stored), and
+a client that sends very slowly keeps its connection open. Limits on connections and
+request rates belong in front of the API (the Container Apps ingress).
+
+### Upload decisions
+
+Decided in SCRUM-82. Each one says why, and what to change if we change our minds.
+
+1. **The size limit is enforced while the upload arrives, before sign-in.** A
+   `Content-Length` over the limit is answered `413` before any of the body is read.
+   A body sent without one (chunked) is counted as it arrives: past the limit the API
+   stops reading, answers `413`, and deletes what it had spooled. The whole request
+   counts, so extra files in the form count too. *Why:* FastAPI reads the whole form,
+   spooling files to temporary disk, before the route and its sign-in run, so without
+   this anyone could make the API write as much as they send. The middleware sits
+   inside CORS, so the web app can read the `413`. *To change:* set
+   `MAX_VIDEO_UPLOAD_BYTES` (see [Config](#config)); the middleware reads it too.
+2. **The request may be 1 MiB larger than the video.** *Why:* the form also carries
+   the plan exercise id, the file name, and the multipart headers. The web app sends
+   a few hundred bytes of them, and 1 MiB is also the most Starlette accepts in one
+   form field. So a video at the limit always gets through, and one a little over it
+   is refused by the exact check on the received file, with the same message. *To
+   change:* `FORM_OVERHEAD_BYTES` in `app/uploads.py`.
+3. **The first bytes are checked before ffprobe.** An MP4 or QuickTime file starts
+   with a box (`ftyp`, or `moov`, `mdat`, `free`, `skip`, `wide`, or `pnot` in older
+   QuickTime files), and WebM with the EBML header. *Why:* a renamed photo, document,
+   or web page is refused without being copied to disk or given to ffprobe, and the
+   answer asks for a video (`415`) instead of saying the video can't be read (`422`).
+   ffprobe still checks the whole container. *To change:* `MOV_FIRST_BOXES` and
+   `EBML_MAGIC` in `app/uploads.py`.
+4. **The length limits come from the analysis contract, not from a setting.** *Why:*
+   the AI service uses the same `MIN_VIDEO_SECONDS` and `MAX_VIDEO_SECONDS`
+   (`ai/app/analysis_contract.py`, copied to `app/schemas/analysis_contract.py`) and
+   reads at most `MAX_VIDEO_SECONDS` plus one second of a video, so a setting that
+   raised only the API's limit would let through videos the analysis can't use.
+   *To change:* edit the contract in `ai/app/analysis_contract.py`, then copy it as
+   that file says.
+5. **The user's file name is used only for its extension.** It is never part of a
+   storage key, a temporary file's name, or a log line. *Why:* a file name can hold
+   a path (`../`), a patient's name, or anything else a client sends. *To change:* to
+   show patients their file's name, store it in a new column, never in the key.
+
+`tests/test_uploads.py` covers the limit while an upload arrives (with and without a
+`Content-Length`, using a small limit) and the first-bytes check (photos, documents,
+web pages, and archives named as each video type). `tests/test_sessions.py` covers
+the same through the endpoint with real ffprobe: oversized, wrong-type, and renamed
+files, and videos of each type that are too short or too long, are refused and
+create no session, and a stored video's key is the session's UUID, never the file
+name.
 
 ## Background analysis (SCRUM-45)
 
@@ -597,7 +676,7 @@ Read from environment variables (see `/.env.example`): database URL, Clerk setti
 | `CLERK_AUTHORIZED_PARTIES` | API | Web app origins, comma-separated. Tokens must come from one of them, and browsers may call the API only from them (CORS). Empty skips the token's origin check and blocks every browser, so set it everywhere |
 | `STORAGE_CONNECTION_STRING` | API | Storage account to use. `UseDevelopmentStorage=true` locally (Azurite on `127.0.0.1:10000`). In Azure, the storage account's connection string: it holds the account key, so it is a secret. See Storage |
 | `STORAGE_CONTAINER` | API | Private blob container for videos. Default `videos`. Created if missing |
-| `MAX_VIDEO_UPLOAD_BYTES` | API, Docker Compose | Maximum uploaded video size in bytes; positive integer, default 524288000 (500 MiB). The API needs about twice this in temporary disk space per upload being checked. Independent of the shared duration limits |
+| `MAX_VIDEO_UPLOAD_BYTES` | API, Docker Compose | Maximum uploaded video size in bytes; positive integer, default 524288000 (500 MiB). Checked while an upload arrives and again on the received file (see Upload limits). The API needs about twice this in temporary disk space per upload being checked. Independent of the shared duration limits. The web app has its own copy in `frontend/src/utils/videoValidation.ts`: change both together |
 | `AI_SERVICE_URL` | API | Where the background analysis sends `POST /analyze`. Default `http://localhost:8001`. Docker Compose sets `http://ai:8001`; in Azure, the AI container app's internal URL. See Background analysis |
 | `AI_SERVICE_TIMEOUT_SECONDS` | API | Seconds to wait for `POST /analyze` to answer before the session fails with `analysis_timed_out`. Positive number, default 230. In Azure keep it between 180 and 240 (see Session lifecycle) |
 | `TEST_DATABASE_URL` | pytest | The test database. See Testing |
