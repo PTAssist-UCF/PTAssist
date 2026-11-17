@@ -33,7 +33,9 @@ from app.schemas.analysis_contract import AnalysisResult
 EXAMPLES = Path(__file__).parents[2] / "docs" / "analysis-result-examples"
 
 # pat's sessions: a label, the exercise, the day in November 2026 it was uploaded, and
-# the example result it got (None: still processing).
+# the example result it got. The last two are still processing (no result), and were
+# uploaded just now (no day): a session processing since November would be stuck, and
+# reading it would fail it (SCRUM-66, tests/test_stuck_sessions.py).
 HISTORY = [
     ("squat_1", "squat", 1, "squat"),
     ("plank_1", "plank", 2, "plank"),
@@ -41,8 +43,8 @@ HISTORY = [
     ("plank_2", "plank", 4, "failed-timed-out"),
     ("squat_3", "squat", 5, "squat-zero-reps"),
     ("plank_3", "plank", 6, "plank-no-hold"),
-    ("leg_1", "side_leg_raise", 8, None),
-    ("squat_4", "squat", 9, None),
+    ("leg_1", "side_leg_raise", None, None),
+    ("squat_4", "squat", None, None),
 ]
 EXERCISE_OF = {label: exercise for label, exercise, _, _ in HISTORY}
 
@@ -80,17 +82,19 @@ def add_plan(db: Session, therapist: User, patient: User) -> dict[str, PlanExerc
 
 
 def add_session(
-    db: Session, target: PlanExercise, on: int, result: str | None
+    db: Session, target: PlanExercise, on: int | None, result: str | None
 ) -> uuid.UUID:
-    """A session uploaded on that day, finished with that example result (complete or
-    failed, as the result says), or still processing without one."""
+    """A session uploaded on that day (None: just now), finished with that example
+    result (complete or failed, as the result says), or still processing without
+    one."""
     saved = None if result is None else example(result)
     session = ExerciseSession(
         plan_exercise=target,
         status=SessionStatus.PROCESSING if saved is None else saved["status"],
         video_key=f"sessions/{uuid.uuid4()}.mp4",
-        created_at=day(on),
     )
+    if on is not None:
+        session.created_at = day(on)  # otherwise the database's now()
     if saved is not None:
         session.result = SessionResult(result=saved)
     db.add(session)
@@ -158,9 +162,10 @@ def test_sessions_are_listed_newest_first(
     assert [item["id"] for item in body] == [
         str(history[label]) for label, _, _, _ in reversed(HISTORY)
     ]
-    assert [datetime.fromisoformat(item["created_at"]) for item in body] == [
-        day(on) for _, _, on, _ in reversed(HISTORY)
-    ]
+    uploaded = [datetime.fromisoformat(item["created_at"]) for item in body]
+    # The two processing sessions were uploaded just now, the others on their day.
+    assert uploaded[0] > uploaded[1] > day(6)
+    assert uploaded[2:] == [day(on) for _, _, on, _ in reversed(HISTORY[:-2])]
     assert [item["status"] for item in body] == [
         "processing",
         "processing",

@@ -65,3 +65,57 @@ def test_ai_service_timeout_must_be_a_positive_number(
     monkeypatch.setenv("AI_SERVICE_TIMEOUT_SECONDS", value)
     with pytest.raises(ValueError, match="AI_SERVICE_TIMEOUT_SECONDS"):
         read_settings()
+
+
+def test_stuck_session_cutoff_is_longer_than_the_analysis_waits_for_the_ai_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """By default 30 seconds more than the 10 seconds to connect plus the 230 to
+    answer, and no longer than the web app's 300-second polling timeout
+    (docs/analysis-result.md, Clip limits and timing)."""
+    monkeypatch.delenv("AI_SERVICE_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("STUCK_SESSION_CUTOFF_SECONDS", raising=False)
+    assert read_settings()["STUCK_SESSION_CUTOFF_SECONDS"] == 270
+
+
+@pytest.mark.parametrize("value", ["", None], ids=["empty", "unset"])
+def test_stuck_session_cutoff_follows_the_ai_service_timeout(
+    monkeypatch: pytest.MonkeyPatch, value: str | None
+) -> None:
+    monkeypatch.setenv("AI_SERVICE_TIMEOUT_SECONDS", "200")
+    if value is None:
+        monkeypatch.delenv("STUCK_SESSION_CUTOFF_SECONDS", raising=False)
+    else:
+        monkeypatch.setenv("STUCK_SESSION_CUTOFF_SECONDS", value)
+    assert read_settings()["STUCK_SESSION_CUTOFF_SECONDS"] == 240
+
+
+@pytest.mark.parametrize("value", ["241", "600"])
+def test_stuck_session_cutoff_can_be_set(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.delenv("AI_SERVICE_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.setenv("STUCK_SESSION_CUTOFF_SECONDS", value)
+    assert read_settings()["STUCK_SESSION_CUTOFF_SECONDS"] == float(value)
+
+
+@pytest.mark.parametrize("value", ["240", "230", "100", "0", "-1", "nan", "inf"])
+def test_stuck_session_cutoff_must_be_longer_than_the_ai_service_wait(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """With the default timeout the analysis may wait 240 seconds for the AI service, so
+    a cutoff of 240 or less could fail a session it is still waiting on."""
+    monkeypatch.delenv("AI_SERVICE_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.setenv("STUCK_SESSION_CUTOFF_SECONDS", value)
+    with pytest.raises(ValueError, match="STUCK_SESSION_CUTOFF_SECONDS"):
+        read_settings()
+
+
+def test_a_longer_ai_service_timeout_needs_a_longer_stuck_session_cutoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cutoff set by hand is checked against the timeout it runs with."""
+    monkeypatch.setenv("AI_SERVICE_TIMEOUT_SECONDS", "300")
+    monkeypatch.setenv("STUCK_SESSION_CUTOFF_SECONDS", "300")
+    with pytest.raises(ValueError, match="STUCK_SESSION_CUTOFF_SECONDS"):
+        read_settings()

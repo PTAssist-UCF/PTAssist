@@ -1,6 +1,7 @@
 """Patient uploads and session status, scoped through the owning plan.
 
-A stored upload is handed to the background analysis (app/jobs/analysis.py).
+A stored upload is handed to the background analysis (app/jobs/analysis.py). Reading
+the status fails a session stuck in processing (app/jobs/stuck_sessions.py).
 """
 
 import contextlib
@@ -26,6 +27,7 @@ from app.auth.current_user import CurrentUser
 from app.auth.ownership import can_see_patient
 from app.db import get_db
 from app.jobs.analysis import analyze_session
+from app.jobs.stuck_sessions import fail_stuck_sessions
 from app.models import (
     ExerciseSession,
     Plan,
@@ -157,4 +159,9 @@ def get_session(
     # every route both roles call, the session's result included (SCRUM-68).
     if row is None or not can_see_patient(db, user, row.patient_id):
         raise HTTPException(404, "Session not found")
-    return SessionResponse.model_validate(row.ExerciseSession)
+    session = row.ExerciseSession
+    if session.status == SessionStatus.PROCESSING:
+        # Failed now if it is stuck (app/jobs/stuck_sessions.py), so the page polling
+        # it stops waiting. The commit expires the session, so it is read again below.
+        fail_stuck_sessions(db, [session.id])
+    return SessionResponse.model_validate(session)
