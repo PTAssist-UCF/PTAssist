@@ -8,5 +8,6 @@ clerk-backend-api==7.0.0
 fastapi==0.142.2
 httpx==0.28.1
 psycopg[binary]==3.3.6
+python-multipart==0.0.33
 sqlalchemy==2.1.1
 uvicorn==0.54.0

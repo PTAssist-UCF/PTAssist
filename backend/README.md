@@ -4,7 +4,7 @@ FastAPI service. It is the only entry point into PTAssist: the frontend talks on
 
 ## Stack
 
-FastAPI, SQLAlchemy, Alembic, PostgreSQL (psycopg 3 driver), Clerk's Python SDK (`clerk-backend-api`), the Azure Blob SDK (`azure-storage-blob`), pytest, ruff. Runtime dependencies in `requirements.txt`; test and lint tools in `requirements-dev.txt`.
+FastAPI, SQLAlchemy, Alembic, PostgreSQL (psycopg 3 driver), Clerk's Python SDK (`clerk-backend-api`), the Azure Blob SDK (`azure-storage-blob`), httpx (calls to the AI service), pytest, ruff. Runtime dependencies in `requirements.txt`; test and lint tools in `requirements-dev.txt`.
 
 ## Layout
 
@@ -13,12 +13,14 @@ app/
   main.py    Creates the FastAPI app and includes the routers
   config.py  Settings from environment variables
   db.py      SQLAlchemy engine and the get_db session dependency
+  seed.py    Local dev data: a linked therapist and patient with a plan (see Dev data)
+  promote_therapist.py  Makes a user a therapist, by email (see Promote a therapist)
   routes/    HTTP endpoints, grouped by area
   schemas/   Request and response models (Pydantic). analysis_contract.py is a copy, see Analysis results
   models/    Database tables (SQLAlchemy). Base class in base.py
   auth/      Clerk token check, current user, role and ownership checks
   storage/   Video storage: upload, temporary read links, delete (Azurite locally, Azure Blob in the cloud)
-  jobs/      Background task that calls the AI service
+  jobs/      Background work: the analysis that calls the AI service, and the cleanup of stuck sessions
 migrations/  Alembic migrations (versions/ holds one file per migration)
 tests/
 alembic.ini  Alembic settings
@@ -26,6 +28,11 @@ Dockerfile   API image, also used to run migrations
 ```
 
 ## Run locally
+
+Video uploads also need `ffprobe` on `PATH` (installed by the ffmpeg package). The
+API Docker image includes it. If running Python outside Docker, install ffmpeg
+from its official distribution and check `ffprobe -version`. The API can start
+without it, but video validation then returns `503`.
 
 Needs Python 3.12, plus Postgres and Azurite for storage. The simplest way to get both is Docker Compose: run `docker compose up -d db azurite` from the repo root (see the root README, Getting started). `DATABASE_URL` and `STORAGE_CONNECTION_STRING` in `/.env.example` already point at them. Then run these from `backend/`:
 
@@ -69,7 +76,46 @@ alembic upgrade head                                   # apply all migrations
 alembic revision --autogenerate -m "add user table"    # create a new one
 ```
 
-To add a table: create the model in `app/models/`, import it in `app/models/__init__.py` (so autogenerate can see it), then run `alembic revision --autogenerate`. Always read the generated file before committing. New migrations are linted and formatted with ruff automatically. Constraint and index names follow the naming convention in `app/models/base.py`.
+To add a table: create the model in `app/models/`, import it in `app/models/__init__.py` (so autogenerate can see it), then run `alembic revision --autogenerate`. Always read the generated file before committing. New migrations are linted and formatted with ruff automatically. Constraint and index names follow the naming convention in `app/models/base.py`. `tests/test_migrations.py` fails if the models and the migrations don't match.
+
+Rows every database needs, like the exercise library, are added by a migration too (see `op.bulk_insert` in `migrations/versions/c35bebbdd455_add_core_data_model.py`), never by hand.
+
+## Dev data (seed)
+
+`app/seed.py` fills your local database with a therapist, a patient linked to them, and a plan with all 5 exercises. Run it from `backend/` after `alembic upgrade head`, with `DATABASE_URL` set to your local database. Never run it against Azure.
+
+```bash
+python -m app.seed                                   # a placeholder patient
+python -m app.seed --patient-email you@example.com   # give the plan to your own account
+```
+
+In Docker Compose, run it in the `api` container: `docker compose exec api python -m app.seed`.
+
+The placeholder users (`therapist@example.com` and `patient@example.com`) have no Clerk account, so nobody can sign in as them. To see the plan in the web app, sign in once (which creates your user as a patient), then run the seed with `--patient-email` and your email. Running it again adds nothing new, and a patient who already has a plan keeps it (a patient has one plan). The targets are made-up numbers for testing, not clinical advice.
+
+## Promote a therapist
+
+New users are patients. To make someone a therapist, they sign in to the web app once (which creates their user), then a team member runs `app/promote_therapist.py` with their email. Run it from `backend/`, with `DATABASE_URL` set to the database to change:
+
+```bash
+python -m app.promote_therapist --email someone@example.com            # make them a therapist
+python -m app.promote_therapist --email someone@example.com --demote   # make them a patient again
+```
+
+In Docker Compose, run it in the `api` container: `docker compose exec api python -m app.promote_therapist --email someone@example.com`. For Azure, run it as a Container Apps job, not from your computer (the database's firewall only lets our Azure services in): see `infra/README.md`, Promote a therapist.
+
+| The email belongs to | What happens | Exit code |
+| --- | --- | --- |
+| Nobody | Nothing changes. The person must sign in to the web app once first | 1 |
+| More than one user | Nothing changes, because it can't tell which one is meant. This can happen if someone deleted their Clerk account and signed up again: ask the backend team | 1 |
+| A therapist | Nothing changes, and it says so. Running it twice is safe | 0 |
+| A patient who has a therapist or a plan | Nothing changes, unless you add `--force` (see below) | 1 |
+| Any other patient | They become a therapist | 0 |
+
+- The email's case and any spaces around it don't matter.
+- **Why a patient with a therapist or a plan is refused:** a new therapist has only signed in once, so a patient with a therapist link or a plan is most likely the wrong email. A therapist can link patients and see their data, so promoting the wrong person matters. If it is the right person (for example, a team member who tried the patient side), run it again with `--force`. Their links, plans, and sessions are kept, but as a therapist they can no longer use them. `--demote` checks the same way: a therapist with linked patients or plans is refused without `--force`.
+- It prints the user's id, never their email, because in Azure its output goes to the logs.
+- The person sees their new side of the web app after they reload it.
 
 ## Every request
 
@@ -78,7 +124,11 @@ To add a table: create the model in `app/models/`, import it in `app/models/__in
 3. Check the role (patient or therapist). Wrong role means `403`.
 4. Check ownership: patients see only their own data, therapists see only linked patients. Not yours means `404`.
 
-Roles live in our database, not in Clerk. Therapists are promoted by the team with a script.
+Steps 1 and 2 are the `CurrentUser` dependency (see Sign-in). For step 3, a therapist-only route takes `CurrentTherapist` instead, from the same file: it answers `403` to anyone who is not a therapist. For step 4, `get_link` in `app/auth/ownership.py` returns a therapist's link to a patient, or `None` when they are not linked. Routes that both roles call use `can_see_patient` from the same file instead: the role decides the rule (a patient may see only their own data, a therapist only the data of linked users who are still patients), so a request outside it is `404`, not `403` (see Sessions, results, and progress).
+
+`tests/test_permissions.py` checks these steps on every route, with a row for each (see Testing).
+
+Roles live in our database, not in Clerk. Therapists are promoted by the team with a script (see Promote a therapist).
 
 ## Sign-in (Clerk)
 
@@ -112,7 +162,7 @@ Never log tokens or emails. The database engine hides query values (`hide_parame
 - Users must sign up with an email address (Clerk Dashboard, **User & authentication**). The API needs it to create their row.
 - `CLERK_AUTHORIZED_PARTIES` lists the web app's origins: `http://localhost:5173` (the Vite dev server) locally, and the Static Web Apps URL in Azure. It is also the list of origins that browsers may call the API from (see Browser access).
 
-Until the promote script exists (SCRUM-65), promote a local test account by hand: `UPDATE users SET role = 'therapist' WHERE email = '<email>';`
+To make an account a therapist, sign in with it once, then run the promote script (see Promote a therapist).
 
 ### Browser access (CORS)
 
@@ -128,17 +178,33 @@ The web app and the API run on different origins: `http://localhost:5173` and `h
 
 ## Data model
 
-| Table | Holds |
-| --- | --- |
-| `User` (`users`) | Clerk id, email, role (`patient` or `therapist`), created time |
-| `TherapistPatient` | Which therapist is linked to which patient |
-| `Exercise` | The exercise library (5 exercises for the proof of concept): its name in the API, such as `squat`, and whether it is done in reps or held (the plank) |
-| `Plan` | A therapist's plan for one patient |
-| `PlanExercise` | An exercise in a plan, with targets (reps, sets, frequency, or a hold time in seconds for a hold exercise) |
-| `Session` | One uploaded video (one set) for a plan exercise, with status |
-| `SessionResult` | The analysis result of a finished session, complete or failed (JSONB, see Analysis results) |
+| Model (table) | File | Holds |
+| --- | --- | --- |
+| `User` (`users`) | `user.py` | Clerk id, email, role (`patient` or `therapist`), created time |
+| `TherapistPatient` (`therapist_patients`) | `therapist_patient.py` | Which therapist is linked to which patient |
+| `Exercise` (`exercises`) | `exercise.py` | The exercise library: its name in the API, such as `squat`, a display name, and its kind: `reps`, or `hold` for the plank |
+| `Plan` (`plans`) | `plan.py` | A therapist's plan for one patient |
+| `PlanExercise` (`plan_exercises`) | `plan.py` | An exercise in a plan, with targets: reps per set (or a hold time in seconds for a hold exercise), sets, and times per week |
+| `ExerciseSession` (`sessions`) | `session.py` | One uploaded video (one set) for a plan exercise, with its status: `processing`, `complete`, or `failed` |
+| `SessionResult` (`session_results`) | `session.py` | The analysis result of a finished session, complete or failed, in one JSONB column (see Analysis results) |
+
+```
+users ──< therapist_patients >── users        (therapist, patient)
+users ──< plans ──< plan_exercises >── exercises
+                    plan_exercises ──< sessions ──── session_results (0 or 1)
+```
 
 Table names are plural snake_case (`users`), and primary keys are UUIDs (see `app/models/user.py`). The schema changes only through Alembic migrations. Never edit the database by hand, and never change a migration after it is merged.
+
+How the tables fit together, and why (SCRUM-43):
+
+- **The session model is `ExerciseSession`**, not `Session`, because routes also use SQLAlchemy's `Session` for the database connection. The table is still `sessions`, and the API still says "session".
+- **Exercises are rows, added by migrations.** The migration that creates `exercises` also adds the 5 exercises, so every database has them, Azure included. `name` is plain text, not a database enum, and other tables point at the exercise's `id`, so adding or renaming an exercise is a new migration that adds or changes a row. Its `name` must match the AI service's (`docs/analysis-result.md`, Exercise names).
+- **A plan exercise has either `reps` or `hold_seconds`**, never both: reps per set for exercises done in reps, a hold time for the plank. Both kinds have `sets`. One video is one set, so `sets` is how many videos to upload each time, and `times_per_week` is how many days a week (1 to 7). The database checks that exactly one target is set and that targets are positive. It can't check that the target fits the exercise's kind, so the plan endpoints do (see [Exercise library and plans](#exercise-library-and-plans-scrum-63)). For `side_leg_raise`, `reps` counts both sides together, like the result's `rep_count`.
+- **Ownership goes through the plan.** A session belongs to a plan exercise, which belongs to a plan, whose `patient_id` is the owner. A therapist may see it if they are linked to that patient in `therapist_patients`. The database can't check roles (they are in `users`), so routes check that the therapist in a link or plan is a therapist and the patient a patient.
+- **A session has at most one result.** `session_results.session_id` is its primary key. The failure reason is inside the JSON, not on the session (`docs/analysis-result.md`, How the backend stores it).
+- **Results are kept.** A plan exercise that has sessions can't be deleted (the foreign key refuses), so changing a plan must not delete exercises that have uploads.
+- **Each link is stored once:** the same therapist and patient can't be linked twice, and nobody can be linked to themselves. A patient may have several therapists. The database allows several plans too, but the plan endpoints give a patient one plan (see [Plan decisions](#plan-decisions)).
 
 ## Session lifecycle
 
@@ -148,16 +214,16 @@ upload -> processing -> complete
 ```
 
 1. `POST` upload: validate the file (type, size, and length between `MIN_VIDEO_SECONDS` and `MAX_VIDEO_SECONDS` from `app/schemas/analysis_contract.py`, currently 3 seconds to 2 minutes; import them, don't hard-code them), store it, create the `Session` as `processing`. A file that fails these checks gets an HTTP error, and no session is created.
-2. A FastAPI background task creates a 15-minute read link and calls the AI service `POST /analyze`.
-3. The result is saved to `SessionResult`, and the session's status becomes the result's `status`: `complete` or `failed`.
+2. A FastAPI background task (`app/jobs/analysis.py`, see [Background analysis](#background-analysis-scrum-45)) creates a 15-minute read link and calls the AI service `POST /analyze`.
+3. The result is checked against the contract and saved to `SessionResult`, and the session's status becomes the result's `status`: `complete` or `failed`, in the same transaction.
 4. If there is no valid result, the backend saves a failed result itself: `analysis_unavailable` when the AI service could not be reached, answered with an error, or sent a result that does not match the contract, and `analysis_timed_out` when it did not answer in time.
-5. Sessions stuck in `processing` too long are also saved as failed, with `analysis_timed_out`.
+5. A session still `processing` `STUCK_SESSION_CUTOFF_SECONDS` after its upload (270 seconds by default) is stuck: it is saved as failed, with `analysis_timed_out`, when the API starts and when its status is read (see [Stuck sessions](#stuck-sessions-scrum-66)).
 
 A session's result is saved once: after a session is `complete` or `failed` it never changes, and a later answer for it is dropped.
 
-The AI service may take up to 3 minutes for a 2-minute clip, counting from a cold start. On Azure, Container Apps ends any HTTP request after 240 seconds, so the timeout in step 2 must be between 3 and 4 minutes (for example 230 seconds). The stuck cutoff in step 5 must be longer than that timeout, so the cleanup never fails a session the background task is still waiting on. See [Clip limits and timing](../docs/analysis-result.md#clip-limits-and-timing).
+The AI service may take up to 3 minutes for a 2-minute clip, counting from a cold start. On Azure, Container Apps ends any HTTP request after 240 seconds, so the timeout in step 2 (`AI_SERVICE_TIMEOUT_SECONDS`, 230 seconds by default) must be between 3 and 4 minutes. The stuck cutoff in step 5 must be longer than the background task can wait for the AI service, 10 seconds to connect plus that timeout, so the cleanup never fails a session the background task is still waiting on, and the frontend's polling timeout (300 seconds) must be at least the cutoff. See [Clip limits and timing](../docs/analysis-result.md#clip-limits-and-timing).
 
-The frontend polls the session status. Once it is `complete` or `failed`, the `SessionResult` has the details, including the failure reason. Later, a job queue can replace the background task without changing the API.
+The frontend polls the session status. Once it is `complete` or `failed`, the `SessionResult` has the details, including the failure reason (`GET /sessions/{session_id}/result`, see Sessions, results, and progress). Later, a job queue can replace the background task without changing the API.
 
 ## Analysis results
 
@@ -185,10 +251,440 @@ Each route's function name becomes its operation id in the API description (`/op
 | --- | --- | --- |
 | Me | `GET /me` | Anyone signed in |
 | Exercises | `GET /exercises` | Anyone signed in |
-| Patients | `GET/POST/DELETE /therapist/patients` | Therapist |
-| Plans | `POST/PUT /plans`, `GET /plans/me` | Therapist, patient |
-| Sessions | `POST /sessions`, `GET /sessions/{id}`, `GET /sessions` | Patient (therapist can read linked patients') |
-| Progress | `GET /patients/{id}/progress` | Therapist |
+| Patients | `GET/POST /therapist/patients`, `DELETE /therapist/patients/{patient_id}` | Therapist |
+| Plans | `GET/PUT /therapist/patients/{patient_id}/plan`, `GET /plans/me` | Therapist (a linked patient's), patient (their own) |
+| Sessions | `POST /sessions`, `GET /sessions/{id}` | Patient (therapist can read linked patients') |
+| Results | `GET /patients/{id}/sessions`, `GET /sessions/{id}/result`, `GET /patients/{id}/progress` | Patient, and therapists linked to them |
+
+## Linking patients (SCRUM-62)
+
+A therapist links a patient by the email the patient signed in with, and then sees only their linked patients' data. These endpoints are for therapists only: anyone else, patients included, gets `403`.
+
+| Endpoint | Does | Success |
+| --- | --- | --- |
+| `POST /therapist/patients` with `{"email": "..."}` | Links the patient who uses that email | `201` with the linked patient |
+| `GET /therapist/patients` | Lists the users the caller is linked to who are still patients, ordered by email | `200` with a list (empty if none) |
+| `DELETE /therapist/patients/{patient_id}` | Removes the caller's link to that patient | `204`, no body |
+
+A linked patient is `{"id", "email", "linked_at"}`: the patient's user id (the `patient_id` to unlink), their email, and when this therapist linked them.
+
+- **Finding the patient.** The email is compared ignoring case and the spaces around it, and only with patients. The patient must have signed in once, so that their user exists. An email that no patient uses gets `404` with the same message whether nobody or a therapist uses it, so the answer doesn't tell who has an account. This also means nobody can link themselves: the caller is a therapist, not a patient.
+- **Linking twice gets `409`**, also when two requests arrive at once (the database keeps one link per pair). The existing link stays as it was.
+- **An email that two patients use gets `409`.** Our copy of an email is never updated (see Sign-in), so an old user row can share its email with a newer one. The API never guesses which patient is meant; the team fixes the data.
+- **A patient can have several therapists.** Each therapist sees only their own links.
+- **Unlinking removes only the link.** A patient the caller is not linked to (an unknown id, or another therapist's patient) gets `404`, not `403`, so the answer doesn't tell who is linked to whom. Plans, sessions, and results are kept (results are never deleted). The therapist just stops seeing them, because every therapist check goes through the link, and sees them again after linking the patient again. The patient keeps their plan, and still sees it and uploads to it (see [Plan decisions](#plan-decisions)).
+- **A linked user who is made a therapist leaves the list.** A role change with `--force` keeps the link (see Promote a therapist), but the list leaves them out, the same rule as for their data (decision 8 in Sessions, results, and progress). They come back if they are made a patient again. Unlinking is unchanged: it removes any link of the caller's, also one the list no longer shows, and removing it shows nothing.
+
+| Status | When |
+| --- | --- |
+| `401` | No valid token |
+| `403` | The caller is not a therapist |
+| `404` | Link: no patient uses that email. Unlink: the caller is not linked to that patient |
+| `409` | Link: already linked, or more than one patient uses that email |
+| `422` | Link: the email is missing, blank, longer than 320 characters, or contains a NUL character |
+
+**Frontend handoff:** router tag `patients`; operation ids `link_patient`, `list_linked_patients`, and `unlink_patient`. Regenerate the hooks from the running API (`npm run generate:api`); the generated frontend files are left to the frontend team. To try the endpoints in `/docs`, promote your local account to therapist first (see Clerk settings). `tests/test_therapist_patients.py` covers each endpoint, including the wrong role and the wrong owner.
+
+## Exercise library and plans (SCRUM-63)
+
+A therapist builds a plan for a linked patient from the exercise library: a list of exercises, each with targets. The patient reads their plan, and uploads a video for one of its exercises with that exercise's `id` (the `plan_exercise_id` of `POST /sessions`).
+
+| Endpoint | Who | Does | Success |
+| --- | --- | --- | --- |
+| `GET /exercises` | Anyone signed in | Lists the exercise library, ordered by display name | `200` with a list |
+| `GET /therapist/patients/{patient_id}/plan` | Therapist | Reads a linked patient's plan | `200` with the plan |
+| `PUT /therapist/patients/{patient_id}/plan` | Therapist | Saves a linked patient's whole plan: creates it the first time, then replaces its exercises and targets | `201` with the plan when it was created, `200` when it was updated |
+| `GET /plans/me` | Patient | Reads the caller's own plan | `200` with the plan |
+
+An exercise is `{"id", "name", "display_name", "kind"}`. `name` is the AI service's name for it (such as `squat`), and `kind` is `reps`, or `hold` for an exercise held for time (the plank).
+
+A plan is `{"id", "patient_id", "created_at", "exercises"}`, with its exercises in the library's order. Each is `{"id", "exercise", "reps", "hold_seconds", "sets", "times_per_week"}`: `id` is the `plan_exercise_id` to upload a video with, `exercise` is the library exercise, and the targets are the ones in Data model (one of `reps` and `hold_seconds` is `null`).
+
+A save sends the whole plan, with each exercise's `id` from `GET /exercises`:
+
+```json
+{"exercises": [
+  {"exercise_id": "<the squat's id>", "reps": 10, "sets": 3, "times_per_week": 3},
+  {"exercise_id": "<the plank's id>", "hold_seconds": 30, "sets": 3, "times_per_week": 3}
+]}
+```
+
+It needs at least one exercise, each at most once, with `reps` for an exercise done in reps or `hold_seconds` for one held for time, never both. `reps` can be 1 to 100, `hold_seconds` 1 to `MAX_VIDEO_SECONDS` (120), `sets` 1 to 10, and `times_per_week` 1 to 7.
+
+| Status | When |
+| --- | --- |
+| `401` | No valid token |
+| `403` | A patient calls a therapist endpoint (even about themselves), or a therapist calls `GET /plans/me` |
+| `404` | Therapist endpoints: the caller is not linked to that patient. An unknown id, another therapist's patient, and a user who is not a patient get the same answer, `Patient not found`, so it doesn't tell who exists or who is linked to whom. Reads: there is no plan yet (a message of its own) |
+| `409` | Save: it leaves out an exercise the patient has uploaded videos for (decision 4). Nothing is saved |
+| `422` | Save: a body that breaks the rules above, an unknown `exercise_id`, or a target that doesn't fit the exercise's kind (`reps` for the plank, `hold_seconds` for the others). Therapist endpoints: a `patient_id` that is not a UUID |
+
+### Plan decisions
+
+Decided in SCRUM-63. Each one says why, and what to change if we change our minds.
+
+1. **A patient has one plan, and every therapist linked to them can see and change it.** *Why:* the patient gets one list of exercises, and two therapists share it, the same way every linked therapist already sees the patient's sessions. When a therapist unlinks, the next one takes the plan over instead of starting a second one. The plan's `therapist_id` stays the therapist who made it. The database allows several plans per patient (SCRUM-43), so the save makes sure of it: it locks the patient's row first, so a second save at the same moment waits, then updates the plan the first one made. *To change:* to give each therapist their own plan, look plans up by therapist and patient (`_find_plan` in `app/routes/plans.py`, and `app/seed.py`), and make `GET /plans/me` return a list.
+2. **Saving sends the whole plan with `PUT`, which creates it the first time.** *Why:* with one plan per patient, the plan builder sends what it shows, and doesn't need to know whether a plan exists yet. *To change:* split it into `POST` (create, `409` if there is one) and `PUT` (update, `404` if there is none).
+3. **A save changes the plan's exercises in place, matched by `exercise_id`.** An exercise that stays keeps its plan exercise `id` and gets the targets sent, a new one is added, and one left out is deleted. *Why:* a session points at its plan exercise, so an exercise that stays keeps its sessions, their results, and the patient's upload link. A plan exercise's exercise never changes, so a session always stays the exercise it was recorded for. Targets are not versioned: new targets count from the save on, and old results keep their own counts. *To change:* to keep old targets as well, add a row with the new targets instead of changing the old one, and decide which row new uploads go to.
+4. **An exercise the patient has uploaded videos for can't be left out: the save answers `409`, and nothing is saved.** Exercises without uploads are deleted. *Why:* results are kept, and the database refuses to delete a plan exercise that has sessions. Refusing is the simplest rule that loses nothing, and it needs no new column. The therapist can still change its targets. A save and an upload at the same moment can't miss each other. The save locks the plan's exercises, so an upload that is saving its session right then is waited for, and the save then answers `409`. The other way round, an upload checks its exercise again, with a lock, just before it saves its session: if a save removed the exercise while the video was being stored, the upload deletes the video and answers `409`, asking the patient to refresh their plan (see [Video upload and session status](#video-upload-and-session-status-scrum-44)). *To change:* to let therapists retire such an exercise, add a nullable `removed_at` column to `plan_exercises` (a new migration). The save then sets it instead of answering `409`, the plan endpoints leave removed exercises out, `POST /sessions` refuses them, and results and progress still show them.
+5. **The plan stays with the patient after unlinking.** The patient still sees it and can upload to it (`POST /sessions` only checks that the plan is theirs). The unlinked therapist no longer sees or changes it, and a therapist linked later does (decision 1). A save locks the therapist's link until it ends, so the patient stays linked through the save: an unlink waits for a save under way, and a save that comes during an unlink answers `404` and changes nothing. *Why:* the patient can keep doing their exercises, and nothing is lost. *To change:* to hide a plan that no linked therapist looks after, check for a link in `GET /plans/me` and `POST /sessions`.
+6. **Targets have upper limits** (listed above). *Why:* they catch typos (100 instead of 10) and keep numbers within the database columns. One video is one set, so a hold has to fit in one clip. They are sanity checks, not clinical advice. *To change:* the constants at the top of `app/schemas/plan.py`.
+7. **No plan yet is a `404`, with a message the web app can show.** *Why:* the same as any other missing thing in the API, and the web app doesn't retry a `404`. *To change:* answer `200` with `null` instead.
+8. **Exercises are ordered by display name**, in the library and in plans. *Why:* there is no order column, and one order everywhere keeps the pages consistent. *To change:* add a position column (a new migration).
+
+**Frontend handoff:** router tags `exercises` and `plans`; operation ids `list_exercises`, `get_patient_plan`, `save_patient_plan`, and `get_my_plan` (hooks `useListExercises()`, `useGetPatientPlan()`, `useSavePatientPlan()`, and `useGetMyPlan()`). Regenerate the hooks from the running API (`npm run generate:api`); the generated frontend files are left to the frontend team.
+
+- Plan builder (SCRUM-76): load `GET /exercises` and the patient's plan (a `404` means there is none yet: start empty). Use each exercise's `kind` to ask for reps or a hold time, check the limits above, then save the whole list. A `409`, and a `422` about an exercise (unknown, or the wrong kind of target), have a sentence in `detail` to show; other `422`s have FastAPI's list of field errors.
+- My plan (SCRUM-77): `GET /plans/me` (a `404` means there is none yet). Open the upload page with an exercise's `id` as its `plan_exercise_id`. An upload answers `409` if a therapist took the exercise out of the plan while it was uploading: show its `detail`, and load the plan again.
+
+`tests/test_exercises.py` and `tests/test_plans.py` cover each endpoint, including the wrong role, an unlinked therapist, another patient's plan, and each validation error. They also cover a save at the same moment as another save, an unlink, or an upload (in both orders).
+
+## Video upload and session status (SCRUM-44)
+
+`POST /sessions` accepts a `multipart/form-data` request with two required fields:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `plan_exercise_id` | UUID text | An assigned exercise whose plan belongs to the signed-in patient |
+| `video` | File | One MP4, MOV, or WebM recording (one set) |
+
+Send the Clerk token in `Authorization: Bearer <token>`. The route accepts patients
+only (`403` for therapists). A missing assignment or another patient's assignment
+returns `404`, before inspecting media or writing a blob. Filenames are never used
+as storage keys: the API generates a UUID and stores `sessions/<uuid>.<extension>`
+(see [Upload limits](#upload-limits-scrum-82)).
+
+Validation checks the actual uploaded size, not a caller's size claim. The default
+limit is **500 MiB** (`MAX_VIDEO_UPLOAD_BYTES=524288000`), which fits two-minute
+1080p phone recordings. 4K recordings may exceed it: record at 1080p, or raise the
+limit deliberately (mind the temporary disk, below). FastAPI spools multipart
+files to temporary disk before the route runs, so the API also counts an upload
+while it arrives and stops reading it at the limit (see
+[Upload limits](#upload-limits-scrum-82)). While it checks an upload, the API holds about twice
+its size on temporary disk (the spooled file plus an inspection copy), and Azure
+Container Apps gives a container only about 1-4 GiB of it, depending on its CPU
+size. A higher limit leaves room for fewer uploads at once. Neither copy is kept
+after the request.
+
+Before inspection, the file's first bytes must be those of an MP4, MOV, or WebM
+video, of the type its extension names, so a renamed photo or document is refused
+(`415`) without being copied or inspected.
+`ffprobe` inspects the actual media container and checks for a video stream (audio
+and cover art alone do not count). The inspected type must match the extension:
+`.webm` for WebM, and `.mp4` or `.mov` for the MP4/QuickTime family, which phones
+name loosely (for example an ISO MP4 saved as `.mov`). The blob gets the inspected
+container's extension and a trusted content type derived by the API (`video/mp4`,
+`video/quicktime`, or `video/webm`), never the request's arbitrary content type.
+Inspection has a 15-second timeout, permits only local-file protocols and the
+supported container demuxers, and its output is never returned or logged. A
+timeout answers `503`, not `422`: it means the API was too slow, not that the video
+is bad, so the patient is not asked to record again. Videos must be between `MIN_VIDEO_SECONDS`
+and `MAX_VIDEO_SECONDS` from `app/schemas/analysis_contract.py`, currently 3-120
+seconds, inclusive. The container duration is checked too, so a long audio track
+cannot extend a clip past the maximum. This is media metadata validation, not full
+decoding or pose analysis; the AI service retains its own input checks.
+
+| Response | Meaning |
+| --- | --- |
+| `201` | Private blob saved and session committed as `processing` |
+| `401` | Missing or invalid Clerk token |
+| `403` | The signed-in user cannot upload in their role |
+| `404` | Assignment is missing or not owned by this patient |
+| `409` | A therapist took the exercise out of the plan while the video was uploading. The stored video is deleted, and the message asks the patient to refresh their plan |
+| `413` | The video exceeds `MAX_VIDEO_UPLOAD_BYTES`, or the request exceeds it plus 1 MiB (checked while it arrives) |
+| `415` | Unsupported declared type/extension, first bytes that are not an MP4, MOV, or WebM video, or a format that does not match the extension |
+| `422` | Invalid form, empty/unreadable media, no video, or duration outside the shared limits |
+| `503` | Inspection tool unavailable or timed out, or upload/database write failed |
+
+Rejected videos do not create a session or call `storage.upload`. The route holds no
+database connection while it checks and stores the video, which can take minutes: it
+ends the transaction of the sign-in and ownership checks first (otherwise a few slow
+uploads would use up the connection pool), uploads the blob, and only then inserts
+and commits the session in a short transaction. That transaction first checks the
+assignment again and locks it (`FOR SHARE`), because a therapist may have taken the
+exercise out of the plan while the video was stored (SCRUM-63). If it is gone, the
+blob is deleted and the answer is `409`, asking the patient to refresh their plan:
+not `404`, because the assignment was there when the upload started, and a plan
+change made during the upload removed it. The lock keeps a plan save from removing
+the exercise until the session is committed; the save then sees the session and
+keeps the exercise (see [Plan decisions](#plan-decisions), decision 4).
+
+If uploading or committing the
+session fails, the transaction is rolled back and blob deletion is attempted,
+including for a partially uploaded blob, so no blob is left without a session and no
+session without its video. Cleanup failure is logged using
+only the generated session UUID. Since PostgreSQL and blob storage do not share a
+transaction, an outage during compensating deletion can leave an orphan blob for
+later cleanup. The existing storage dependency still reports missing/broken storage
+configuration as described under Storage and Config.
+
+Both the `201` acknowledgement and `GET /sessions/{session_id}` return:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | UUID | Session identifier used for polling |
+| `plan_exercise_id` | UUID | Assigned exercise for this recording |
+| `status` | `processing`, `complete`, or `failed` | Current saved state |
+| `created_at` | Time with timezone | When the session was created |
+
+Status is visible to the owning patient and therapists currently linked to that
+patient, as long as the owner is still a patient (`can_see_patient`, the same rule as
+the session's result). Other patients, unlinked therapists, a linked user who is no
+longer a patient, and unknown IDs receive `404`.
+Reading the status of a session stuck in `processing` saves it as failed first, so
+the answer already says `failed` (see Stuck sessions).
+The response never exposes a private storage key or a signed video URL. Results
+and progress have their own routes (see Sessions, results, and progress).
+
+**Analysis starts after the response.** Once the session is committed, the route
+schedules the background analysis (next section) and answers `201` with the session
+`processing`; the frontend polls `GET /sessions/{session_id}` until it is `complete`
+or `failed`. The analysis reads `session.video_key` and gets a temporary read URL
+through `app/storage/`. Migration `e846d97b14af` adds the unique key, and
+`163e3f3a47c4` makes it required (`NOT NULL`), so every session has a stored video.
+No session can lack a key (the upload route is the only code that creates sessions),
+so that migration neither fills in nor deletes rows: if one without a key exists
+anyway, it stops with "contains null values" and changes nothing, rather than
+deleting the session and its result.
+
+**Frontend handoff:** router tag `sessions`; operation IDs `create_session` and
+`get_session`. The API describes the upload form and `SessionResponse` in
+`/openapi.json`. The frontend team must regenerate Orval hooks from the running
+API (`npm run generate:api`); generated frontend files were deliberately left for
+that team. In `/docs`, authorize, select `POST /sessions`, enter an owned plan
+exercise UUID, choose a video, and execute. Use the returned `id` in the GET route.
+
+`tests/test_sessions.py` generates tiny synthetic videos in pytest's temporary
+directory with ffmpeg (no recordings are committed). It exercises real ffprobe,
+Postgres, and Azurite for uploads, permission checks, duration boundaries, private
+retrieval, rollback cleanup, and that no database connection is held while a video
+is checked and stored. `tests/test_uploads.py` covers the size limit while an upload
+arrives, the first-bytes check, and inspection errors.
+
+## Upload limits (SCRUM-82)
+
+The API's own checks on `POST /sessions`, so a client that skips the web app's
+checks still can't store anything but a short video under a random name, or fill the
+API's disk. In the order they run:
+
+| Check | Where | Answer |
+| --- | --- | --- |
+| The request's size, while it arrives: at most `MAX_VIDEO_UPLOAD_BYTES` plus 1 MiB for the rest of the form | `UploadSizeLimitMiddleware` in `app/uploads.py` | `413` |
+| Sign-in, role, and an assignment of the patient's own | `app/routes/sessions.py` | `401`, `403`, `404` |
+| The extension (`.mp4`, `.mov`, `.webm`) and the declared content type | `validate_video` in `app/uploads.py` | `415` |
+| The received video's size: at most `MAX_VIDEO_UPLOAD_BYTES`, and not empty | `validate_video` | `413`, `422` |
+| The first bytes: an MP4 or QuickTime box, or WebM's EBML header, of the type the extension names | `validate_video` | `415` |
+| The container, a video stream, and the length (`MIN_VIDEO_SECONDS` to `MAX_VIDEO_SECONDS`, 3 to 120 seconds), read by ffprobe | `validate_video` | `415`, `422` |
+| Stored as `sessions/<session id><extension>`: a new random UUID and the inspected container's extension | `app/routes/sessions.py` | `201` |
+
+Each `413` and `415` has a sentence in `detail` that the web app can show. The size
+message gives the limit in MB of 1024 * 1024 bytes, as the web app shows a file's
+size: "Video exceeds the 500 MB limit. Please record a shorter or lower-resolution
+video."
+
+The web app checks the size, types, and length before it uploads
+(`frontend/src/utils/videoValidation.ts`), so its users get the answer without
+sending the video. What these checks don't cover: after a `413`, the server still
+reads and throws away whatever the client keeps sending (none of it is stored), and
+a client that sends very slowly keeps its connection open. Limits on connections and
+request rates belong in front of the API (the Container Apps ingress).
+
+### Upload decisions
+
+Decided in SCRUM-82. Each one says why, and what to change if we change our minds.
+
+1. **The size limit is enforced while the upload arrives, before sign-in.** A
+   `Content-Length` over the limit is answered `413` before any of the body is read.
+   A body sent without one (chunked) is counted as it arrives: past the limit the API
+   stops reading, answers `413`, and deletes what it had spooled. The whole request
+   counts, so extra files in the form count too. *Why:* FastAPI reads the whole form,
+   spooling files to temporary disk, before the route and its sign-in run, so without
+   this anyone could make the API write as much as they send. The middleware sits
+   inside CORS, so the web app can read the `413`. *To change:* set
+   `MAX_VIDEO_UPLOAD_BYTES` (see [Config](#config)); the middleware reads it too.
+2. **The request may be 1 MiB larger than the video.** *Why:* the form also carries
+   the plan exercise id, the file name, and the multipart headers. The web app sends
+   a few hundred bytes of them, and 1 MiB is also the most Starlette accepts in one
+   form field. So a video at the limit always gets through, and one a little over it
+   is refused by the exact check on the received file, with the same message. *To
+   change:* `FORM_OVERHEAD_BYTES` in `app/uploads.py`.
+3. **The first bytes are checked before ffprobe.** An MP4 or QuickTime file starts
+   with a box (`ftyp`, or `moov`, `mdat`, `free`, `skip`, `wide`, or `pnot` in older
+   QuickTime files), and WebM with the EBML header. *Why:* a renamed photo, document,
+   or web page is refused without being copied to disk or given to ffprobe, and the
+   answer asks for a video (`415`) instead of saying the video can't be read (`422`).
+   ffprobe still checks the whole container. *To change:* `MOV_FIRST_BOXES` and
+   `EBML_MAGIC` in `app/uploads.py`.
+4. **The length limits come from the analysis contract, not from a setting.** *Why:*
+   the AI service uses the same `MIN_VIDEO_SECONDS` and `MAX_VIDEO_SECONDS`
+   (`ai/app/analysis_contract.py`, copied to `app/schemas/analysis_contract.py`) and
+   reads at most `MAX_VIDEO_SECONDS` plus one second of a video, so a setting that
+   raised only the API's limit would let through videos the analysis can't use.
+   *To change:* edit the contract in `ai/app/analysis_contract.py`, then copy it as
+   that file says.
+5. **The user's file name is used only for its extension.** It is never part of a
+   storage key, a temporary file's name, or a log line. *Why:* a file name can hold
+   a path (`../`), a patient's name, or anything else a client sends. *To change:* to
+   show patients their file's name, store it in a new column, never in the key.
+
+`tests/test_uploads.py` covers the limit while an upload arrives (with and without a
+`Content-Length`, using a small limit) and the first-bytes check (photos, documents,
+web pages, and archives named as each video type). `tests/test_sessions.py` covers
+the same through the endpoint with real ffprobe: oversized, wrong-type, and renamed
+files, and videos of each type that are too short or too long, are refused and
+create no session, and a stored video's key is the session's UUID, never the file
+name.
+
+## Background analysis (SCRUM-45)
+
+`app/jobs/analysis.py` has the job: `analyze_session(session_id)`. `POST /sessions`
+schedules it as a FastAPI background task once the session is committed, so it runs
+after the `201` is sent. Before that, the route closes the upload's temporary file:
+FastAPI would otherwise keep it on disk until the analysis ends. The job:
+
+1. Loads the session's status, `video_key`, and exercise name in a short read, so
+   no database connection is held during the call. A session that is gone or no
+   longer `processing` is skipped, without calling the AI service.
+2. Makes a 15-minute read link with `storage.read_url` and sends `AnalyzeRequest`
+   (session id, exercise name, link) to `POST {AI_SERVICE_URL}/analyze` with httpx.
+   It waits up to 10 seconds to connect and `AI_SERVICE_TIMEOUT_SECONDS` (default
+   230) for the answer.
+3. Checks the answer with `AnalysisResult.model_validate`, then saves it in one
+   transaction: it locks the session's row, and only if the session is still
+   `processing` adds the `SessionResult` and sets the status to the result's
+   `status`. Otherwise the answer is dropped, so a result is saved once.
+
+| What happens | Saved result |
+| --- | --- |
+| `200` with a valid complete result | The result as sent; status `complete` |
+| `200` with a valid failed result (the AI service's own failure, such as `no_person`) | The result as sent; status `failed` |
+| Any other status (such as a `500` crash, or `422` for a request it refused) | `analysis_unavailable` |
+| An answer that is not JSON or does not match the contract | `analysis_unavailable` |
+| No connection: refused, unknown host, no connection within 10 seconds, or the connection broke | `analysis_unavailable` |
+| No answer within `AI_SERVICE_TIMEOUT_SECONDS` | `analysis_timed_out` |
+| An empty `video_key` (the AI service is not called) | `analysis_unavailable` |
+| Any other error in the job, such as a bug | `analysis_unavailable` |
+| The database refuses the result (for example text with the character `\u0000`) | `analysis_unavailable` in its place |
+
+The backend's own failures are `AnalysisResult.failed(code, analyzer_version=None)`,
+so they meet the contract and carry the standard patient message. Every path ends
+`complete` or `failed`, except one: if the database itself can't be reached, nothing
+can be saved, and the session stays `processing` until the cleanup of stuck
+sessions fails it (next section). The same happens if the API container stops during
+an analysis (a deploy, or scaling in).
+
+Log lines carry only the session id and the outcome (such as "failed with
+analysis_timed_out: no answer in time"), never the read link, an exception's
+message, or the AI service's answer. Only `WARNING` and above show without logging
+configuration, which covers every failure.
+
+Each running analysis waits in one of the API's worker threads, the same pool of 40
+threads (anyio's default) that runs its other routes. That is plenty for the proof
+of concept; the job queue planned as a stretch goal would remove the limit.
+
+Until the real pipeline is connected (SCRUM-52), the AI service's `POST /analyze` is
+a stub that returns made-up results, so a local upload ends `complete` with those.
+
+Tests never call the AI service: see Testing. `tests/test_analysis_job.py` covers
+each row above, a session that finishes during the call, and a job that runs twice.
+It uses real sockets for an AI service that is down or never answers.
+
+## Stuck sessions (SCRUM-66)
+
+`app/jobs/stuck_sessions.py` saves sessions stuck in `processing` as failed, with
+`AnalysisResult.failed("analysis_timed_out", analyzer_version=None)`, so the page
+polling one stops waiting. A session gets stuck when its background analysis can't
+save anything: the database can't be reached, or the API stops during the analysis (a
+deploy, scaling in, a crash).
+
+- **When a session is stuck:** it has been `processing` for longer than
+  `STUCK_SESSION_CUTOFF_SECONDS` since its upload (`created_at`), by the database's
+  clock. By default that is 30 seconds more than the analysis can wait for the AI
+  service (10 seconds to connect plus `AI_SERVICE_TIMEOUT_SECONDS`), so 270 seconds
+  with the default timeout. The 30 seconds cover the analysis's other steps, such as
+  making the read link and saving. The API refuses to start with a cutoff that is not
+  longer than that wait, so the cleanup never fails a session the analysis is still
+  waiting on. The web app gives up polling after 300 seconds (`POLL_TIMEOUT_MS` in
+  `frontend/src/hooks/useSessionStatus.ts`), which must stay at least the cutoff: a
+  cutoff over 300 seconds needs a frontend change too.
+- **When the API starts**, before it takes requests, it fails every stuck session,
+  such as the ones an API that stopped left behind (the `lifespan` in `app/main.py`).
+  If this fails, for example because the database can't be reached, the API logs the
+  error's type and starts anyway. Status reads then fail stuck sessions as usual.
+- **When a status is read**, the sessions about to be shown are failed if they are
+  stuck: `GET /sessions/{session_id}`, `GET /sessions/{session_id}/result`, and
+  `GET /patients/{patient_id}/sessions`. Only after the usual permission check, so a
+  `404` changes nothing. The answer already has the new status, and the result route
+  the `analysis_timed_out` result. Progress shows only complete sessions, so it has
+  nothing to fail. There is no timer: a stuck session nobody reads stays `processing`
+  until it is read or the API starts again.
+- **A result is saved once.** The cleanup locks the session's row
+  (`FOR UPDATE SKIP LOCKED`) and fails it only while it is still `processing`, as the
+  analysis does before it saves (Background analysis, step 3). A row that is locked
+  already is being finished at that moment, by the analysis or by another cleanup, so
+  the cleanup skips it instead of waiting. An answer from the AI service that arrives after the cleanup
+  is dropped, and an analysis that starts after it (one that waited for a free worker
+  thread, say) skips the session without calling the AI service.
+- **Logs:** one `WARNING` per failed session, with only its id ("Session <id> failed
+  with analysis_timed_out: stuck in processing").
+
+No migration: the sessions table already has the status and the upload time.
+
+`tests/test_stuck_sessions.py` saves sessions uploaded in the past, by the database's
+clock, so no test waits for the cutoff. It covers each route for the patient and the
+linked therapist, a session within the cutoff, finished sessions, the wrong owner and
+the wrong role, the start-up cleanup, an API that starts when that cleanup fails, an
+answer that arrives after the cleanup, and a cleanup that runs while the analysis
+saves its result. The `client` fixture does not run the API's start-up; `with
+TestClient(app):` does. `tests/test_config.py` checks the cutoff's default and limits.
+
+## Sessions, results, and progress (SCRUM-64)
+
+Read-only routes for a patient's history: their sessions, each session's analysis result, and their progress per exercise. The patient and their linked therapists call the same routes. Uploading, and the status the upload page polls, are unchanged (see the two sections above).
+
+| Endpoint | Returns |
+| --- | --- |
+| `GET /patients/{patient_id}/sessions` | The patient's sessions from all their plans, newest first, without results |
+| `GET /sessions/{session_id}/result` | One session with its analysis result, which is `null` while the session is processing |
+| `GET /patients/{patient_id}/progress` | For each exercise, the patient's complete sessions, oldest first, with the numbers a chart needs |
+
+**Who sees what.** A patient sees only their own data: `patient_id` is their own user id, from `GET /me`. A therapist sees only the data of users they are linked to who are still patients, all of it, including sessions for another therapist's plan (links are per patient, as for `GET /sessions/{session_id}`). Both users' current roles count (`can_see_patient` in `app/auth/ownership.py`), because a role change with `--force` keeps links, plans, and sessions (see Promote a therapist). So after one, a leftover link shows a patient nothing, a therapist no longer sees their own sessions from when they were a patient, and a former patient's therapists no longer see that history, the same rule as the plan endpoints (SCRUM-63).
+
+| Status | When |
+| --- | --- |
+| `200` | The data, or an empty list when the patient has no sessions (for progress: no complete ones) |
+| `401` | No valid token |
+| `404` | Another patient's data, a patient the therapist is not linked to, a linked user who is no longer a patient, or an unknown id: all get the same answer, so it doesn't tell whether the patient or session exists |
+| `422` | The id in the path is not a UUID |
+
+A session in the list (`SessionSummary`) has `id`, `plan_exercise_id`, `status`, and `created_at`, as in `SessionResponse`, plus `exercise_name` (the exercise's name in the API, such as `squat`) and `exercise_display_name` (such as `Squat`). The result route (`SessionResultResponse`) answers with the same fields plus `result`: the saved `AnalysisResult`, described in [`docs/analysis-result.md`](../docs/analysis-result.md) (a failed one has the reason in `error_code` and `error_message`), or `null` while the session is `processing`. Once the session is `complete` or `failed`, `result` is set: the job saves the result and the status together, and the route reads both in one query, so an answer never pairs `processing` with a result. The list and the result route fail a stuck session before they show it (see Stuck sessions).
+
+Progress is a list with one entry (`ExerciseProgress`) per exercise, ordered by `exercise_name`: `exercise_name`, `exercise_display_name`, `exercise_kind` (`reps`, or `hold` for the plank), and `sessions`, the chart's points, oldest first (`ProgressPoint`):
+
+| Field | Meaning |
+| --- | --- |
+| `session_id` | The session, for example to open its result |
+| `created_at` | When the video was uploaded: the time axis |
+| `form_score` | From the result. `null` when no rep or hold was seen, which is not a score of 0 |
+| `rep_count`, `hold_seconds` | From the result. Exactly one is set: `hold_seconds` for hold exercises, `rep_count` for the others |
+| `analyzer_version` | From the result. Scores from different versions may not be comparable, so a chart can mark where it changes |
+
+- Only complete sessions are points: failed and processing sessions have no numbers. An exercise without a complete session is left out, so the plan (SCRUM-63), not progress, says what is assigned.
+- One point per session. One video is one set, so a day with 3 sets has 3 points; a chart can group them by day.
+- Progress is per exercise, not per plan: squats from two plans are one line.
+
+**Decisions** (SCRUM-64). Each says why, and what to change if we change our minds:
+
+1. **The result has its own route, and `GET /sessions/{session_id}` is unchanged.** *Why:* the upload page polls that route every 3 seconds and relies on its four fields. *To change:* adding `result` to `SessionResponse` as an optional field is an allowed change, but `tests/test_sessions.py` and `tests/test_results.py` check its exact fields.
+2. **A session that is still processing has `"result": null` with a `200`, not an error.** *Why:* processing is a normal state, not a failure, and `404` already means "not yours or doesn't exist". *To change:* answer `409` in `get_session_result`, and make `result` required.
+3. **The list has no results.** *Why:* a result holds every rep, so the list stays small however many sessions a patient has. The result route has the details, and progress has the scores. *To change:* add an optional `result`, or a few of its fields such as `form_score`, to `SessionSummary`.
+4. **Both roles use the same routes, with the patient's id in the path**, instead of separate routes for patients (such as `/me/sessions`) and therapists. *Why:* one rule and one hook for each question, so patient and therapist screens can share code. *To change:* add patient routes that run the same queries with the caller's own id.
+5. **Progress has one point per complete session, grouped by exercise across plans, and leaves out exercises without one.** *Why:* only complete results have numbers, and the plan endpoints decide what is assigned (SCRUM-63). *To change:* `get_patient_progress` in `app/routes/results.py`.
+6. **Saved results go out as the contract's `AnalysisResult`, checked again with `AnalysisResult.model_validate`.** *Why:* the API description then has the real type, so the frontend's generated `AnalysisResult` can replace its temporary one (SCRUM-59), and a broken saved result fails loudly instead of reaching a screen. *To change:* nothing when the contract gains a field: these routes return it too.
+7. **No pagination.** *Why:* a proof of concept has few sessions per patient. *To change:* add query parameters to the list, such as `limit` and `before` (a time).
+8. **A therapist sees a linked user's data, and the user in their list of patients, only while that user is a patient.** *Why:* a forced promotion keeps the link, but someone who is no longer a patient should not stay visible to their old therapists through a link nobody removed, and the plan endpoints (SCRUM-63) answer `404` in that case too. Unlinking still removes such a link (see Linking patients). *To change:* `linked_patients` in `app/auth/ownership.py`, which `can_see_patient` and `GET /therapist/patients` use. The plan endpoints check the role themselves (`_find_linked_patient` in `app/routes/plans.py`).
+
+**Frontend handoff:** router tag `results` (`src/api/results.ts`); operation ids `list_patient_sessions`, `get_session_result`, and `get_patient_progress`. Regenerating the hooks (`npm run generate:api`) also brings the `AnalysisResult` type, with `RepResult` and `Issue`, which replaces the temporary type in `frontend/src/components/ResultView/types.ts` (SCRUM-59). `tests/test_results.py` covers each route with complete, failed, and processing sessions, the wrong owner, the wrong role, a role change on either side of a link, and no token, plus a result saved while the result route reads the session.
 
 ## Storage
 
@@ -221,13 +717,13 @@ DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=${AZURITE_
 
 `AZURITE_ACCOUNT_KEY` is Azurite's well-known development key, published in Microsoft's Azurite documentation (the link is in `/.env.example`). It is not a real secret, but GitHub secret scanning flags it like any Azure storage key and may block the push, so it is not in the repo: each developer puts it in their own `/.env` (never committed). Without it the stack still starts and `/health` works, but storage calls in the Compose API fail with "The storage connection string has no account key to sign read links".
 
-Compose sets the `api` service's other settings itself and takes only `CLERK_SECRET_KEY`, `CLERK_AUTHORIZED_PARTIES`, and `AZURITE_ACCOUNT_KEY` from `/.env`. The other values in `/.env`, such as `DATABASE_URL` and `STORAGE_CONNECTION_STRING` (`UseDevelopmentStorage=true`), are for running the API on your computer.
+Compose sets the `api` service's other settings itself and takes only `CLERK_SECRET_KEY`, `CLERK_AUTHORIZED_PARTIES`, `AZURITE_ACCOUNT_KEY`, `MAX_VIDEO_UPLOAD_BYTES`, `AI_SERVICE_TIMEOUT_SECONDS`, and `STUCK_SESSION_CUTOFF_SECONDS` from `/.env`. The other values in `/.env`, such as `DATABASE_URL` and `STORAGE_CONNECTION_STRING` (`UseDevelopmentStorage=true`), are for running the API on your computer.
 
 Read links made in Compose start with `http://azurite:10000/`. The AI service container can open them; your browser cannot, because only containers in the stack know the name `azurite`.
 
 ## Config
 
-Read from environment variables (see `/.env.example`): database URL, Clerk settings, storage settings, and the AI service URL. No secrets in code. Settings are defined in `app/config.py`. Add new ones there and in `/.env.example`.
+Read from environment variables (see `/.env.example`): database URL, Clerk settings, storage settings, the AI service's URL and timeout, and the cutoff for stuck sessions. No secrets in code. Settings are defined in `app/config.py`. Add new ones there and in `/.env.example`.
 
 | Variable | Read by | What |
 | --- | --- | --- |
@@ -236,6 +732,10 @@ Read from environment variables (see `/.env.example`): database URL, Clerk setti
 | `CLERK_AUTHORIZED_PARTIES` | API | Web app origins, comma-separated. Tokens must come from one of them, and browsers may call the API only from them (CORS). Empty skips the token's origin check and blocks every browser, so set it everywhere |
 | `STORAGE_CONNECTION_STRING` | API | Storage account to use. `UseDevelopmentStorage=true` locally (Azurite on `127.0.0.1:10000`). In Azure, the storage account's connection string: it holds the account key, so it is a secret. See Storage |
 | `STORAGE_CONTAINER` | API | Private blob container for videos. Default `videos`. Created if missing |
+| `MAX_VIDEO_UPLOAD_BYTES` | API, Docker Compose | Maximum uploaded video size in bytes; positive integer, default 524288000 (500 MiB). Checked while an upload arrives and again on the received file (see Upload limits). The API needs about twice this in temporary disk space per upload being checked. Independent of the shared duration limits. The web app has its own copy in `frontend/src/utils/videoValidation.ts`: change both together |
+| `AI_SERVICE_URL` | API | Where the background analysis sends `POST /analyze`. Default `http://localhost:8001`. Docker Compose sets `http://ai:8001`; in Azure, the AI container app's internal URL. See Background analysis |
+| `AI_SERVICE_TIMEOUT_SECONDS` | API | Seconds to wait for `POST /analyze` to answer before the session fails with `analysis_timed_out`. Positive number, default 230. In Azure keep it between 180 and 240 (see Session lifecycle) |
+| `STUCK_SESSION_CUTOFF_SECONDS` | API, Docker Compose | Seconds a session may stay `processing` after its upload before it is saved as failed with `analysis_timed_out`. Empty or unset: 30 more than the analysis can wait for the AI service (10 to connect plus `AI_SERVICE_TIMEOUT_SECONDS`), 270 by default. Must be longer than that wait, or the API does not start, and at most the web app's 300-second polling timeout. See Stuck sessions |
 | `TEST_DATABASE_URL` | pytest | The test database. See Testing |
 | `TEST_STORAGE_CONNECTION_STRING` | pytest | The test storage, by default `UseDevelopmentStorage=true`. See Testing |
 | `AZURITE_ACCOUNT_KEY` | Docker Compose | Azurite's well-known key, for the `api` service's connection string. Not read by the API itself. See Storage in Docker Compose |
@@ -246,7 +746,7 @@ A connection string contains `;`, so in `/.env` wrap any value other than `UseDe
 
 ## Testing
 
-pytest, against a real Postgres database: `TEST_DATABASE_URL`, by default `postgresql+psycopg://ptassist:ptassist@localhost:5433/ptassist_test`. Tests always use it in place of `DATABASE_URL`. Each run builds the schema with `alembic upgrade head`, empties the tables before every test, and drops everything at the end with `alembic downgrade base`, so every run also checks that the migrations work both ways. Never point it at a database you want to keep.
+pytest, against a real Postgres database: `TEST_DATABASE_URL`, by default `postgresql+psycopg://ptassist:ptassist@localhost:5433/ptassist_test`. Tests always use it in place of `DATABASE_URL`. Each run builds the schema with `alembic upgrade head`, empties the tables before every test, and drops everything at the end with `alembic downgrade base`, so every run also checks that the migrations work both ways. Tables the migrations fill in (`exercises`) are not emptied (`MIGRATION_DATA_TABLES` in `tests/conftest.py`), so tests must not change them. Never point it at a database you want to keep.
 
 Start the test database once with Docker. It uses port 5433 so it does not clash with the Compose database (5434) or a Postgres installed on your computer (5432):
 
@@ -291,7 +791,16 @@ def test_example(client, clerk) -> None:
     response = client.get("/me", headers=clerk.headers("user_1"))
 ```
 
-Every route needs a test that rejects the wrong role and the wrong owner.
+Tests never call the AI service either. The `client` fixture brings in `ai_service`, a fake `POST /analyze` that answers with the example squat result, and TestClient runs an upload's background analysis before `client.post` returns. Change its answer, or make it fail, before the upload:
+
+```python
+def test_example(client, clerk, ai_service) -> None:
+    ai_service.status_code = 500  # or: ai_service.body = {...}, ai_service.error = httpx.ConnectError("refused")
+    ...  # upload; the session ends failed with analysis_unavailable
+    assert ai_service.requests[0]["exercise"] == "squat"  # what the job sent
+```
+
+Every route needs a test that rejects the wrong role and the wrong owner. `tests/test_permissions.py` (SCRUM-68) has them for every route, in one grid. Each route's row says who may call it, and what the wrong role and the wrong owner get, or why nobody can be either. For each row, the grid checks that no token gets `401`, that each refused call gets the same answer as the same call about ids that don't exist and changes nothing in the database, and that the callers who may call it get through. `test_every_route_has_a_row` fails when a route has no row, so add one with each new route, as well as the route's own tests. A route that needs no token goes in `PUBLIC` instead, with the reason. Only `/health` and FastAPI's docs pages (`/openapi.json`, `/docs`, `/docs/oauth2-redirect`, and `/redoc`) are there.
 
 ## Pull request CI
 
@@ -308,7 +817,8 @@ The workflow uses read-only repository permissions and needs no repository secre
 job runs two service containers, the same setup as the local tests: `postgres:17` on
 port 5433, with `TEST_DATABASE_URL` pointing at it, and
 `mcr.microsoft.com/azure-storage/azurite:3.37.0` on port 10000, with
-`TEST_STORAGE_CONNECTION_STRING` set to `UseDevelopmentStorage=true`. The Azurite
+`TEST_STORAGE_CONNECTION_STRING` set to `UseDevelopmentStorage=true`. The job installs
+ffmpeg for synthetic upload fixtures and real ffprobe inspection. The Azurite
 image has no health check, so a step waits until it answers before pytest starts.
 The same workflow also runs the AI service's checks (`AI lint`, `AI tests`, and
 `AI image build`), described in `ai/README.md`, and the web app's checks

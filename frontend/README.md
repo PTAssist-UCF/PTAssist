@@ -19,6 +19,7 @@ src/
     patient/    My plan, upload, results, history
     therapist/  Patients, plan builder, patient detail, progress
   setupTests.ts Runs before every test (browser features jsdom lacks)
+  utils/        Shared helpers (for example video validation)
 ```
 
 ## Run locally
@@ -40,8 +41,9 @@ Sign-in uses Clerk's React SDK (`@clerk/react`) and Clerk's own sign-in and sign
 1. A signed-out visitor who opens any page goes to `/sign-in`. New users follow the form's link to `/sign-up`. Clerk's later steps (for example `/sign-in/factor-one`) stay on those pages.
 2. After sign-in, Clerk sends the user back to the page they asked for (the `redirect_url` in the address).
 3. Every API request carries the user's Clerk token (see Talking to the API). The API creates a new user as a patient on their first request.
-4. A bar above each page shows who is signed in (from `GET /me`) and a **Sign out** button. After sign-out, the sign-in page opens, and its address remembers the page the user left, so the next sign-in on that browser returns there. That is harmless: the API checks every request, and SCRUM-34's role routing sends each user to their own side.
+4. The app shell (`AppShellLayout`) wraps each signed-in page with responsive role-specific navigation, header, who is signed in (from `GET /me`, hidden on phone widths), role badge, and a **Sign out** button. The badge and navigation show only once `GET /me` has given the role (skeletons until then, none if it fails); the shell never guesses the role from the address. After sign-out, the sign-in page opens, and its address remembers the page the user left, so the next sign-in on that browser returns there.
 5. (SCRUM-34) The app calls `GET /me` for the role, sends patients to `/patient` and therapists to `/therapist`, and blocks the other side's routes.
+6. (SCRUM-56) A 401 answer from any API call clears cached data and signs the user out of Clerk, which then opens `/sign-in` with `redirect_url` pointing back to the current page. See Decisions for why it signs out instead of only redirecting.
 
 The frontend never decides access on its own. The backend checks every request; route guards are only for a clean user experience.
 
@@ -50,8 +52,8 @@ The frontend never decides access on its own. The backend checks every request; 
 | `src/App.tsx`                                          | Sets up Clerk (`ClerkProvider`) and the routes. Clerk changes pages through React Router, so the app never reloads                    |
 | `src/components/RequireSignIn.tsx`                     | Wraps every page that needs a signed-in user: the loading screen while Clerk loads, a redirect to `/sign-in` when nobody is signed in |
 | `src/components/AuthLoading.tsx`                       | The loading screen: a spinner until Clerk loads, or "Sign-in could not load" if Clerk's code can't be downloaded                      |
-| `src/components/ApiAuth.tsx`                           | Gives the API client Clerk's token, and empties the API cache when nobody is signed in                                                |
-| `src/components/AccountBar.tsx`                        | Who is signed in, and Sign out. The app shell (SCRUM-56) will replace it                                                              |
+| `src/components/ApiAuth.tsx`                           | Gives the API client Clerk's token, signs out of Clerk on a 401 answer, and empties the API cache when nobody is signed in            |
+| `src/components/AppShellLayout.tsx`                    | Role-specific app shell with responsive header, navigation links (patient/therapist), role badge, and Sign out button                 |
 | `src/pages/SignInPage.tsx`, `src/pages/SignUpPage.tsx` | Clerk's forms, with the loading screen until Clerk loads                                                                              |
 
 **A new page that needs sign-in** goes inside the `<Route element={<RequireSignIn />}>` group in `src/App.tsx`.
@@ -73,9 +75,10 @@ If the page says:
 If the bar says "Could not load your account", it also shows the API's answer and, usually, the API's own explanation:
 
 - **The API answered 500: CLERK_SECRET_KEY is not set on the API:** add the secret key to `/.env`. The API's log (`docker compose logs api`) says the same when it starts.
-- **The API answered 401:** the API rejected the token. Most likely `CLERK_SECRET_KEY` in `/.env` comes from a different Clerk instance than the publishable key.
 - **The API answered 503:** the API couldn't get Clerk's signing keys. Either `CLERK_SECRET_KEY` isn't a valid key (check that you copied all of it), or the API can't reach the internet.
 - **No answer from the API:** the browser couldn't read the API's answer. Either the API isn't running, it crashed (`docker compose logs api` shows the error), or this page's origin isn't in `CLERK_AUTHORIZED_PARTIES` (see Browser access in Talking to the API).
+
+If you are signed out and land back on the sign-in page right after signing in, the API answered 401: it rejected the token, and the app signed you out (see Decisions). Most likely `CLERK_SECRET_KEY` in `/.env` comes from a different Clerk instance than the publishable key.
 
 After changing `/.env`, run `docker compose up -d api` again: `docker compose restart` keeps the old values.
 
@@ -89,6 +92,7 @@ To make an account a therapist, see `backend/README.md`, Clerk settings.
 - **Signed-out visitors are redirected with React Router's `<Navigate replace>`**, not Clerk's `<RedirectToSignIn>`. Clerk's adds a history entry, so the Back button would return to the page, which sends you to sign-in again.
 - **The API cache is emptied whenever nobody is signed in**, not only when the Sign out button is clicked. An expired session or a sign-out in another tab is covered too. This relies on Clerk's single-session mode (the default), where switching users always goes through signing out. If "multi-session" is ever turned on in the Clerk Dashboard, also reset the cache when `userId` changes.
 - **The account bar calls `GET /me`**, so a real API request with the token happens right after sign-in, and you can see that it worked. SCRUM-34 reuses the same cached answer for the role.
+- **A 401 answer signs the user out of Clerk** before sending them to sign-in. A 401 while Clerk still says "signed in" means the API rejected a token Clerk thinks is valid (keys from different Clerk instances, clock drift, a revoked session). Clerk's sign-in page sends a signed-in user straight back to `redirect_url`, so a plain redirect would loop between that page and `/sign-in`. `ApiAuth` is the only place that handles 401; the route guards don't redirect on it.
 - **A missing or wrong `VITE_CLERK_PUBLISHABLE_KEY` shows a message.** Without the key, Clerk reports no error: it just never finishes loading. A value that doesn't start with `pk_`, such as the secret key pasted by mistake, gets the same message.
 - **A loading screen, and a message if Clerk can't load** (`AuthLoading`), on the signed-in pages and on the sign-in pages, instead of a blank page or a spinner that never stops.
 - **Tests fake Clerk** with `vi.mock('@clerk/react')` (see `src/App.test.tsx`). Clerk has no helpers for unit tests, and the real SDK downloads its code from Clerk's servers. A real sign-in is checked by hand (Try sign-in locally).
@@ -119,19 +123,49 @@ const { data: me, isLoading, error } = useGetMe();
 - **Hook names and files come from the backend:** the route function `def get_me` becomes `useGetMe()`, and the router's tag (`tags=["me"]`) names the file (`src/api/me.ts`).
 - **Every request goes through `apiFetch` in `src/apiClient.ts`.** It adds the API's address (`VITE_API_URL`) and the signed-in user's Clerk token.
 - **Errors:** when the API answers with an error, the hook's `error` is an `ApiError` with `status` and `body`. When the API can't be reached at all (server down, offline, CORS), `error` is a plain error with no `status`, so check `error instanceof ApiError` before reading `error.status`.
-- **Failed requests are retried.** TanStack Query retries a failed request 3 times (after 1, 2, and 4 seconds), so an error such as a `401` reaches `error` after about 7 seconds. The 401 handling (SCRUM-56) decides whether to skip retries for 4xx answers. Tests turn retries off (`retry: false`).
+- **Failed requests and retries:** `shouldRetryQuery` skips retries for 4xx client errors (such as 401 or 403), so session expiration and unauthorized errors respond immediately. Server (5xx) and network errors are retried up to 3 times. If a request answers 401, `apiFetch` notifies `ApiAuth`, which clears the cache and signs out of Clerk, with `/sign-in?redirect_url=<current page>` as the address to open afterwards. Tests turn retries off (`retry: false`).
 - **The token:** `src/components/ApiAuth.tsx` calls `setTokenGetter` with Clerk's `getToken`. It does so while rendering, before any page below it sends its first request (in a `useEffect` it would be too late: a component's effects run after its children's). Clerk's `getToken` waits for Clerk to load, refreshes the token by itself (each one is valid for 60 seconds), and gives `null` when nobody is signed in: the request then goes out without a token, and the API answers `401`. Pages inside `RequireSignIn` only render for a signed-in user, so their requests always carry a token. Outside it, call hooks that need sign-in only once the user is signed in, for example with `enabled: isSignedIn`.
 - **One shared cache:** `src/main.tsx` wraps the app in a `QueryClientProvider`, so every component that calls `useGetMe()` shares one request and one cached answer. TanStack Query refreshes it in the background when needed, for example when you come back to the tab. `ApiAuth` empties the cache whenever nobody is signed in, so the next user never sees the previous user's data.
 - **Browser access (CORS):** the browser lets the web app read the API's answers only if the page's origin is in `CLERK_AUTHORIZED_PARTIES` in the root `/.env` (`http://localhost:5173`, this dev server, by default). If you run the dev server on another port or host, add it there and run `docker compose up -d api` again (or restart the API, if you run it yourself), or requests fail with "Failed to fetch". See `backend/README.md`, Browser access (CORS).
 - **Tests:** `src/apiClient.test.tsx` shows how to test a hook against a fake API, with no backend running. `src/App.test.tsx` does the same for whole pages, with a fake Clerk.
+- **Status polling:** `useSessionStatus(sessionId)` in `src/hooks/` wraps `useGetSession` and polls every 3 seconds. It stops when the session is `complete` or `failed`, or on an error such as 404. After `POLL_TIMEOUT_MS` it stops and returns `timedOut: true`, so the page can show a message. The timeout must stay at least as long as the backend's stuck-session cutoff (SCRUM-66); see [Clip limits and timing](../docs/analysis-result.md#clip-limits-and-timing).
+
+## My plan
+
+(SCRUM-77) The patient's home page, `/patient` (`src/pages/patient/PatientPage.tsx`), shows their plan from `GET /plans/me` (`useGetMyPlan()`): one card per exercise with its targets (sets and reps, or sets and a hold time for the plank) and how many times a week, and a **Record / Upload** button. `describeTarget` in `src/pages/patient/planDisplay.ts` words the targets for both pages. For the side-lying leg raise it says "total across both sides", because that target counts both legs together.
+
+- **The button opens `/patient/upload?plan_exercise_id=<id>`**, with the plan exercise's `id`: the `plan_exercise_id` that `POST /sessions` takes.
+- **No plan yet:** `GET /plans/me` answers `404`, and the page says the therapist hasn't assigned a plan yet. Other errors show the API's answer and a **Try again** button.
+- **The upload page looks the id up in the plan** and shows the exercise's name and targets; there is no field to type an id. Opened without an id (the **Upload Video** link in the navigation), or with one that isn't in the plan, it lists the plan's exercises to choose from. So it only ever sends an id from the patient's plan.
+- **One form per exercise:** the upload form is keyed by the plan exercise id. When the address changes to another exercise, even with the browser's Back button, the form starts over: the old form's video is never sent with the new id, and its upload is stopped.
+- **An exercise taken out of the plan:** if a therapist removes it before the upload (`POST /sessions` answers `404` "Plan exercise not found") or while the video uploads (`409`), the video isn't saved. The page says so, takes the exercise out of the cached plan (so neither page offers it again, even if the next step fails), and loads the plan again, so the patient can choose from what is left. Any other `404` is an ordinary upload error.
+- **Illustrations and instructions** for each exercise are in `src/pages/patient/exerciseInfo.ts`, by the exercise's name in the API. They are static, not plan data, and an exercise without an entry shows without them.
+- No progress yet: the page shows only what the plan holds. Progress (`GET /patients/{id}/progress`) is SCRUM-96.
 
 ## Upload and results
 
-1. The patient picks or records a video for an assigned exercise and uploads it.
+1. (SCRUM-58) The patient picks a file or records a video on a phone browser (`UploadPage.tsx`) for an exercise of their plan (see My plan), validated on the client for format (MP4/MOV/WebM), size (≤ 500 MB, the API's limit), and duration (3s to 120s) before upload with a progress bar (`uploadWithProgress`).
 2. The session starts as `processing`. The page polls the status every few seconds, and gives up after a timeout at least as long as the backend's cutoff for sessions stuck in `processing` (SCRUM-66), so it never gives up before the backend does (see [Clip limits and timing](../docs/analysis-result.md#clip-limits-and-timing)).
 3. On `complete`, show `rep_count` (or `hold_seconds` for a hold exercise such as the plank), the form score, and feedback. On `failed`, show `error_message`, and offer a re-upload unless `error_code` is `unknown_exercise` (uploading again would fail the same way).
 
 The result's fields, how to show them (score bands, zero reps, holds, sides), and the failure codes are in [`docs/analysis-result.md`](../docs/analysis-result.md). Sample results for building screens are in `docs/analysis-result-examples/`.
+
+## Plan builder (SCRUM-76)
+
+A therapist builds a linked patient's plan from the exercise library. The API's rules are in `backend/README.md`, Exercise library and plans.
+
+1. **Plan Builder** in the navigation (`/therapist/plans`, `PlansPage.tsx`) lists the therapist's linked patients. Each opens that patient's plan builder at `/therapist/patients/:patientId/plan` (`PlanBuilderPage.tsx`), the address the patient list links to as well.
+2. The builder loads the library (`GET /exercises`), the linked patients (to show whose plan it is), and the patient's plan. The plan request has two `404` answers, told apart by their `detail`, word for word from `backend/app/routes/plans.py` (`NO_PLAN_YET` and `PATIENT_NOT_FOUND` in `PlanBuilderPage.tsx`: change them together). "This patient has no plan yet" starts an empty form. "Patient not found" (the patient isn't linked, or is no longer a patient, though still in the list) shows "Patient not found", even over a plan from the cache. Any other `404` is shown as an error. An id that isn't in the therapist's list shows "Patient not found" too, without asking for a plan.
+3. Each picked exercise asks for reps per set, or a hold time in seconds for an exercise held for time (its `kind`), plus sets and times per week. Before saving, the page checks the backend's limits: reps 1 to 100, hold 1 to 120 seconds (the longest video), sets 1 to 10, times per week 1 to 7. They are copied in `LIMITS` in `PlanBuilderPage.tsx` from `backend/app/schemas/plan.py`: change them together. The backend checks them again.
+4. **Save plan** sends the whole plan with one `PUT`, which creates it or replaces its exercises. An exercise the patient has uploaded videos for can't be taken out: the API answers `409`, nothing is saved, and the page shows the API's sentence, which names the exercises. Other errors (`404`, `422`) are explained on the page too.
+5. After saving, the patient sees the plan on their My Plan page (`GET /plans/me`).
+
+The form never loses the therapist's changes, and never saves an old list over a newer plan:
+
+- **A newer plan** can arrive from a refetch, for example after another therapist of the patient saved it (the cached plan shows first). A form without changes shows it. A form with changes keeps them and asks before saving: load the newer version, or keep the changes, which then replace it.
+- **A first plan's form stays during a refetch.** While a refetch runs, the query has no error and no data, so the page remembers the "no plan yet" answer instead of showing a spinner in place of the form.
+- **Opening another patient starts a new form** (`PlanForm` is keyed by the patient's id), so nothing typed for one patient is saved to another one's plan.
+- **A save cancels a refetch that is still running**, so its old answer can't replace the saved plan.
 
 ## Screens
 
@@ -164,7 +198,7 @@ npm. Lint with ESLint 10 (with `typescript-eslint` and the React hooks plugin's 
 - `npm run lint:fix`: run ESLint with autofix
 - `npm run format`: format code using Prettier
 - `npm run format:check`: verify formatting with Prettier
-- `npm test`: run the Vitest tests once (files named `*.test.ts` or `*.test.tsx`). They run in jsdom, a simulated browser; `src/setupTests.ts` adds the browser features it lacks that our tests need (`matchMedia`, for Mantine)
+- `npm test`: run the Vitest tests once (files named `*.test.ts` or `*.test.tsx`). They run in jsdom, a simulated browser; `src/setupTests.ts` adds the browser features it lacks that our tests need (`matchMedia` and `ResizeObserver`, for Mantine)
 - `npm run generate:api`: regenerate the API hooks in `src/api/` from the backend running on `localhost:8000`
 
 ## Pull request CI

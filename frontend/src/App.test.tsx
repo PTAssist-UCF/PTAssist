@@ -39,6 +39,7 @@ vi.mock('@clerk/react', () => ({
     isLoaded: clerk.status === 'ready',
     isSignedIn: clerk.status === 'ready' ? clerk.isSignedIn : undefined,
     getToken: clerk.getToken,
+    signOut: clerk.signOut,
   }),
   useClerk: () => ({ status: clerk.status }),
   // Like Clerk's forms: the fallback shows until Clerk has loaded.
@@ -77,6 +78,20 @@ function fakeApi(status: number, body: unknown) {
   );
 }
 
+/**
+ * A fake API for ME, a patient whose therapist hasn't made their plan yet: GET /plans/me
+ * answers 404, and every other request gets ME.
+ */
+function fakePatientApi() {
+  const me = fakeApi(200, ME);
+  const noPlan = fakeApi(404, {
+    detail: "You don't have a plan yet. Your therapist will make one for you.",
+  });
+  return vi.fn<typeof fetch>((input, init) =>
+    String(input).endsWith('/plans/me') ? noPlan(input, init) : me(input, init),
+  );
+}
+
 /** Opens the app at this address, wrapped the way main.tsx wraps it. */
 function renderApp(path: string) {
   window.history.replaceState(null, '', path);
@@ -110,7 +125,7 @@ beforeEach(() => {
   clerk.settings = null;
   env.clerkPublishableKey = 'pk_test_unit-tests';
   // Every test gets a fake API, so none can reach the network. Tests can swap it.
-  api = fakeApi(200, ME);
+  api = fakePatientApi();
   vi.stubGlobal('fetch', api);
 });
 
@@ -292,5 +307,285 @@ describe('sign-out', () => {
 
     expect(await screen.findByText('Clerk sign-in form')).toBeDefined();
     await waitFor(() => expect(queryClient.getQueryCache().getAll()).toHaveLength(0));
+  });
+});
+
+describe('app shell and role navigation', () => {
+  it('renders the patient shell with patient navigation for a patient', async () => {
+    clerk.isSignedIn = true;
+    api = fakePatientApi();
+    vi.stubGlobal('fetch', api);
+
+    renderApp('/patient');
+
+    expect(await screen.findByText('Signed in as pat@example.com')).toBeDefined();
+    expect(screen.getByText('PTAssist')).toBeDefined();
+    expect(screen.getByText('Patient')).toBeDefined();
+    expect(screen.queryByText('Therapist')).toBeNull();
+
+    // Patient navigation items
+    expect(screen.getByRole('link', { name: /my plan/i })).toBeDefined();
+    expect(screen.getByRole('link', { name: /upload video/i })).toBeDefined();
+    expect(screen.getByRole('link', { name: /results & history/i })).toBeDefined();
+
+    // Therapist navigation items should not be present
+    expect(screen.queryByRole('link', { name: /patients/i })).toBeNull();
+    expect(screen.queryByRole('link', { name: /plan builder/i })).toBeNull();
+    expect(screen.queryByRole('link', { name: /progress & analytics/i })).toBeNull();
+
+    // Main page content
+    expect(screen.getByText('Patient Portal')).toBeDefined();
+    expect(screen.getByText('My Exercise Plan')).toBeDefined();
+  });
+
+  it('renders the therapist shell with therapist navigation for a therapist', async () => {
+    clerk.isSignedIn = true;
+    api = fakeApi(200, { ...ME, role: 'therapist' });
+    vi.stubGlobal('fetch', api);
+
+    renderApp('/therapist');
+
+    expect(await screen.findByText('Signed in as pat@example.com')).toBeDefined();
+    expect(screen.getByText('PTAssist')).toBeDefined();
+    expect(screen.getByText('Therapist')).toBeDefined();
+    expect(screen.queryByText('Patient')).toBeNull();
+
+    // Therapist navigation items
+    expect(screen.getByRole('link', { name: /patients/i })).toBeDefined();
+    expect(screen.getByRole('link', { name: /plan builder/i })).toBeDefined();
+    expect(screen.getByRole('link', { name: /progress & analytics/i })).toBeDefined();
+
+    // Patient navigation items should not be present
+    expect(screen.queryByRole('link', { name: /my plan/i })).toBeNull();
+    expect(screen.queryByRole('link', { name: /upload video/i })).toBeNull();
+    expect(screen.queryByRole('link', { name: /results & history/i })).toBeNull();
+
+    // Main page content
+    expect(screen.getByText('Therapist Dashboard')).toBeDefined();
+    expect(screen.getByText('Assigned Patients')).toBeDefined();
+    expect(screen.getByText('+ Link New Patient')).toBeDefined();
+  });
+
+  it('highlights the active navigation link when visiting role subroutes', async () => {
+    clerk.isSignedIn = true;
+    api = fakePatientApi();
+    vi.stubGlobal('fetch', api);
+
+    renderApp('/patient/upload');
+    expect(await screen.findByText('Signed in as pat@example.com')).toBeDefined();
+    const uploadLink = screen.getByRole('link', { name: /upload video/i });
+    expect(uploadLink.getAttribute('data-active')).toBe('true');
+
+    cleanup();
+
+    api = fakeApi(200, { ...ME, role: 'therapist' });
+    vi.stubGlobal('fetch', api);
+
+    // A page that sends no API request of its own (the plan pages are tested below).
+    renderApp('/therapist/progress');
+    expect(await screen.findByText('Signed in as pat@example.com')).toBeDefined();
+    const progressLink = screen.getByRole('link', { name: /progress & analytics/i });
+    expect(progressLink.getAttribute('data-active')).toBe('true');
+  });
+
+  it.each([
+    ['patient', '/patient/history', 'Results & History'],
+    ['therapist', '/therapist/progress', 'Progress & Analytics'],
+  ])('shows a "Coming soon" page for the %s page %s', async (role, path, title) => {
+    clerk.isSignedIn = true;
+    api = fakeApi(200, { ...ME, role });
+    vi.stubGlobal('fetch', api);
+
+    renderApp(path);
+
+    expect(await screen.findByRole('heading', { name: title })).toBeDefined();
+    expect(screen.getByText('Coming soon.')).toBeDefined();
+    // Not the main page of that side.
+    expect(screen.queryByText('My Exercise Plan')).toBeNull();
+    expect(screen.queryByText('Assigned Patients')).toBeNull();
+  });
+
+  it('renders the upload page for a patient at /patient/upload', async () => {
+    clerk.isSignedIn = true;
+    api = fakePatientApi();
+    vi.stubGlobal('fetch', api);
+
+    renderApp('/patient/upload');
+
+    expect(await screen.findByRole('heading', { name: 'Upload Video' })).toBeDefined();
+    // No plan yet, so nothing to upload a video for, and no field to type an exercise id.
+    expect(await screen.findByText("Your therapist hasn't assigned a plan yet")).toBeDefined();
+    expect(screen.queryByLabelText(/plan exercise id/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /record with camera/i })).toBeNull();
+  });
+
+  it('hides the email on phone widths, so Sign out still fits in the header', async () => {
+    clerk.isSignedIn = true;
+
+    renderApp('/patient');
+
+    const email = await screen.findByText('Signed in as pat@example.com');
+    expect(email.classList.contains('mantine-visible-from-sm')).toBe(true);
+  });
+
+  it('does not guess the role from the address while /me loads', async () => {
+    clerk.isSignedIn = true;
+    vi.stubGlobal('fetch', () => new Promise(() => {}));
+
+    renderApp('/therapist');
+    await waitAMoment();
+
+    expect(document.querySelectorAll('.mantine-Skeleton-root').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Therapist')).toBeNull();
+    expect(screen.queryByText('Therapist Dashboard')).toBeNull();
+    expect(screen.queryByRole('link', { name: /plan builder/i })).toBeNull();
+  });
+
+  it('shows no role-specific navigation when /me fails', async () => {
+    clerk.isSignedIn = true;
+    vi.stubGlobal('fetch', fakeApi(500, { detail: 'Server error' }));
+
+    renderApp('/therapist');
+
+    expect(
+      await screen.findByText('Could not load your account. The API answered 500: Server error'),
+    ).toBeDefined();
+    expect(screen.getByText('Navigation is unavailable until your account loads.')).toBeDefined();
+    expect(screen.queryByText('Therapist')).toBeNull();
+    expect(screen.queryByText('Patient')).toBeNull();
+    expect(screen.queryByText('Therapist Dashboard')).toBeNull();
+    expect(screen.queryByText('Patient Portal')).toBeNull();
+    // The error from RoleRedirect, which RoleRoute sends the user to.
+    expect(await screen.findByText("Couldn't load your account.")).toBeDefined();
+  });
+
+  it('shows loading skeletons in the shell while user account is loading', async () => {
+    clerk.isSignedIn = true;
+    vi.stubGlobal('fetch', () => new Promise(() => {}));
+
+    renderApp('/patient');
+    await waitAMoment();
+
+    expect(screen.getByText('PTAssist')).toBeDefined();
+    expect(document.querySelectorAll('.mantine-Skeleton-root').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Signed in as pat@example.com')).toBeNull();
+  });
+});
+
+describe('plan builder pages', () => {
+  const PATIENT = {
+    id: '7c2e9a41-3b5d-4f60-8e1a-9d3c5b7f2e04',
+    email: 'sam@example.com',
+    linked_at: '2026-11-11T08:30:00Z',
+  };
+  const PLAN_BUILDER = `/therapist/patients/${PATIENT.id}/plan`;
+
+  /**
+   * A fake API that answers by path: GET /me with this role, and the plan pages' requests.
+   * The patient has no plan yet. Any other path answers 404.
+   */
+  function fakePlanApi(role: string) {
+    const answers: Record<string, [number, unknown]> = {
+      '/me': [200, { ...ME, role }],
+      '/therapist/patients': [200, [PATIENT]],
+      '/exercises': [200, [{ id: 'squat-id', name: 'squat', display_name: 'Squat', kind: 'reps' }]],
+      // The API's own answer when there is no plan (backend/app/routes/plans.py).
+      [`/therapist/patients/${PATIENT.id}/plan`]: [404, { detail: 'This patient has no plan yet' }],
+    };
+    return vi.fn<typeof fetch>(async (input) => {
+      const path = new URL(String(input)).pathname;
+      const [status, body] = answers[path] ?? [404, { detail: 'Not Found' }];
+      return new Response(JSON.stringify(body), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+  }
+
+  it('lists the linked patients on the Plan Builder page, each linking to their plan', async () => {
+    clerk.isSignedIn = true;
+    vi.stubGlobal('fetch', fakePlanApi('therapist'));
+
+    renderApp('/therapist/plans');
+
+    const patientLink = await screen.findByRole('link', { name: 'sam@example.com' });
+    expect(patientLink.getAttribute('href')).toBe(PLAN_BUILDER);
+    expect(screen.getByRole('heading', { name: 'Plan Builder' })).toBeDefined();
+    const navLink = screen.getByRole('link', { name: /plan builder/i });
+    expect(navLink.getAttribute('data-active')).toBe('true');
+  });
+
+  it("opens one patient's plan builder at /therapist/patients/:patientId/plan", async () => {
+    clerk.isSignedIn = true;
+    vi.stubGlobal('fetch', fakePlanApi('therapist'));
+
+    renderApp(PLAN_BUILDER);
+
+    expect(await screen.findByRole('heading', { name: 'Plan for sam@example.com' })).toBeDefined();
+    expect(screen.getByRole('checkbox', { name: 'Squat' })).toBeDefined();
+    // Still under Plan Builder in the navigation.
+    const navLink = screen.getByRole('link', { name: /plan builder/i });
+    expect(navLink.getAttribute('data-active')).toBe('true');
+  });
+
+  it("keeps a patient out of the plan builder, and sends no therapist's request", async () => {
+    clerk.isSignedIn = true;
+    const api = fakePlanApi('patient');
+    vi.stubGlobal('fetch', api);
+
+    renderApp(PLAN_BUILDER);
+
+    await waitFor(() => expect(window.location.pathname).toBe('/patient'));
+    const paths = api.mock.calls.map(([url]) => new URL(String(url)).pathname);
+    expect(paths.some((path) => path.startsWith('/therapist') || path === '/exercises')).toBe(
+      false,
+    );
+  });
+});
+
+describe('session expiration (401)', () => {
+  it('signs out of Clerk and returns to the page after sign-in, for a patient', async () => {
+    clerk.isSignedIn = true;
+    api = fakeApi(401, { detail: 'Token expired' });
+    vi.stubGlobal('fetch', api);
+
+    renderApp('/patient');
+
+    // Signing out first matters: Clerk's sign-in page would send a still-signed-in user
+    // straight back to redirect_url, which would answer 401 again, in a loop.
+    await waitFor(() =>
+      expect(clerk.signOut).toHaveBeenCalledWith({
+        redirectUrl: `/sign-in?redirect_url=${encodeURIComponent('/patient')}`,
+      }),
+    );
+    expect(screen.queryByText('My Exercise Plan')).toBeNull();
+  });
+
+  it('signs out of Clerk and returns to the page after sign-in, for a therapist', async () => {
+    clerk.isSignedIn = true;
+    api = fakeApi(401, { detail: 'Token expired' });
+    vi.stubGlobal('fetch', api);
+
+    renderApp('/therapist?tab=analytics#top');
+
+    await waitFor(() =>
+      expect(clerk.signOut).toHaveBeenCalledWith({
+        redirectUrl: `/sign-in?redirect_url=${encodeURIComponent('/therapist?tab=analytics#top')}`,
+      }),
+    );
+    expect(screen.queryByText('Assigned Patients')).toBeNull();
+  });
+
+  it('does not keep asking the API while Clerk signs out', async () => {
+    clerk.isSignedIn = true;
+    api = fakeApi(401, { detail: 'Token expired' });
+    vi.stubGlobal('fetch', api);
+
+    renderApp('/patient');
+    await waitFor(() => expect(clerk.signOut).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(api).toHaveBeenCalledTimes(1);
+    expect(clerk.signOut).toHaveBeenCalledTimes(1);
   });
 });

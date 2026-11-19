@@ -6,7 +6,9 @@ UCF Senior Design, Group A19. Sponsor: Dr. Md Mahfuzur Rahaman.
 
 ## Scope
 
-**Proof of concept (Fall 2026):** web app for patients and therapists, video upload only, 5 exercises ([names](docs/analysis-result.md#exercise-names)), synthetic and open-source data only.
+**Proof of concept (Fall 2026):** web app for patients and therapists, video upload only, 5 exercises ([names](docs/analysis-result.md#exercise-names)), synthetic and open-source data only. Implementation done by Dec 22, 2026, hard deadline Jan 11, 2027 (sprint dates in [`AGENTS.md`](AGENTS.md#2-status)).
+
+**Hosting is on hold:** the sponsor is still deciding where PTAssist will be hosted, so for now everything runs locally with Docker Compose. The Azure plan below is what we build if the sponsor picks Azure.
 
 **Stretch goals (Spring 2027):** live feedback during an exercise, a mobile patient app, and a job queue for analysis. The proof of concept is built so these stay possible.
 
@@ -32,7 +34,7 @@ flowchart LR
 | Database | Users, plans, sessions, and AI results (JSONB) | PostgreSQL |
 | Storage | Uploaded videos, private, deleted after 30 days | Azure Blob (Azurite emulator locally) |
 | Auth | Sign-in only. Roles live in our database | Clerk |
-| [Hosting](infra/README.md) | API and AI service as containers, frontend as a static site | Azure Container Apps, Azure Static Web Apps |
+| [Hosting](infra/README.md) | API and AI service as containers, frontend as a static site. On hold until the sponsor decides; local only for now | Azure Container Apps, Azure Static Web Apps (planned) |
 
 ## How an upload works
 

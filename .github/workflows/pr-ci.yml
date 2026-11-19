@@ -77,6 +77,8 @@ jobs:
       # The Azurite image has no health check, so wait until it answers HTTP (any status).
       - name: Wait for Azurite
         run: timeout 60 bash -c 'until curl -s -o /dev/null http://127.0.0.1:10000/; do sleep 1; done'
+      - name: Install video inspection tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: python -m pytest
 
   api-image:
@@ -89,6 +91,8 @@ jobs:
           persist-credentials: false
       - name: Build API image (no push)
         run: docker build --tag ptassist-api:ci ./backend
+      - name: Check video inspection tool in the API image
+        run: docker run --rm ptassist-api:ci ffprobe -v error -version
 
   # The AI service's checks (ai/README.md, Pull request CI).
   ai-lint:

@@ -38,6 +38,15 @@ type TokenGetter = () => Promise<string | null>;
 // without a token.
 let getToken: TokenGetter = async () => null;
 
+/** Called whenever an API request answers 401 (e.g. expired session). */
+type UnauthorizedHandler = () => void;
+let unauthorizedHandler: UnauthorizedHandler = () => {};
+
+/** Tells apiFetch what to do on a 401 answer (e.g. redirect to sign-in). */
+export function setUnauthorizedHandler(handler: UnauthorizedHandler): void {
+  unauthorizedHandler = handler;
+}
+
 /**
  * Tells apiFetch how to get the signed-in user's token. src/components/ApiAuth.tsx calls
  * this with Clerk's getToken, from Clerk's useAuth() hook. It must run before any hook
@@ -63,9 +72,91 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   const response = await fetch(`${API_URL}${path}`, { ...options, headers });
   const body = await readBody(response);
   if (!response.ok) {
+    if (response.status === 401) {
+      unauthorizedHandler();
+    }
     throw new ApiError(response.status, body);
   }
   return body as T;
+}
+
+export interface UploadProgressEvent {
+  loaded: number;
+  total: number;
+  percent: number;
+}
+
+export interface UploadOptions {
+  onProgress?: (event: UploadProgressEvent) => void;
+  signal?: AbortSignal;
+}
+
+/**
+ * Uploads multipart form data via XMLHttpRequest to report progress.
+ * Adds the API address and Clerk token, dispatches progress updates,
+ * and normalizes errors into ApiError (invoking unauthorizedHandler on 401).
+ */
+export async function uploadWithProgress<T>(
+  path: string,
+  formData: FormData,
+  options: UploadOptions = {},
+): Promise<T> {
+  const token = await getToken();
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_URL}${path}`);
+    if (token) {
+      xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    }
+
+    if (options.signal) {
+      if (options.signal.aborted) {
+        reject(new DOMException('Upload aborted', 'AbortError'));
+        return;
+      }
+      options.signal.addEventListener('abort', () => {
+        xhr.abort();
+        reject(new DOMException('Upload aborted', 'AbortError'));
+      });
+    }
+
+    if (xhr.upload && options.onProgress) {
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const percent = Math.round((event.loaded / event.total) * 100);
+          options.onProgress?.({
+            loaded: event.loaded,
+            total: event.total,
+            percent,
+          });
+        }
+      };
+    }
+
+    xhr.onload = () => {
+      let body: unknown;
+      try {
+        body = xhr.responseText ? JSON.parse(xhr.responseText) : undefined;
+      } catch {
+        body = xhr.responseText;
+      }
+
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(body as T);
+      } else {
+        if (xhr.status === 401) {
+          unauthorizedHandler();
+        }
+        reject(new ApiError(xhr.status, body));
+      }
+    };
+
+    xhr.onerror = () => {
+      reject(new Error('Network error during upload'));
+    };
+
+    xhr.send(formData);
+  });
 }
 
 /** The answer's body: parsed JSON, plain text, or undefined when it is empty. */

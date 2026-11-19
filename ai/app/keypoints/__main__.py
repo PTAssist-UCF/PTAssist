@@ -8,63 +8,17 @@ import argparse
 import json
 import shutil
 import sys
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
-import cv2
-
-from .pose import create_landmarker, detect, draw_skeleton, frame_json
-from .video import TARGET_FPS, OverlayWriter, VideoError, normalize
-
-# Relative to ai/, where the command runs. The model is not in git (see README).
-DEFAULT_MODEL = Path("models/pose_landmarker_full.task")
+from .extract import DEFAULT_MODEL, extract_keypoints
+from .video import OverlayError, VideoError, VideoTimeoutError
 
 
 def extract(video: Path, out_dir: Path, model: Path) -> dict[str, Any]:
     """Write the keypoint JSON and the overlay video, and return the JSON data."""
-    with (
-        tempfile.TemporaryDirectory() as temp_dir,
-        create_landmarker(model) as landmarker,
-    ):
-        normalized = Path(temp_dir) / "normalized.mp4"
-        normalize(video, normalized)
-
-        capture = cv2.VideoCapture(str(normalized))
-        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        if width == 0 or height == 0:
-            capture.release()
-            raise VideoError(f"{video.name} has no frames that can be read")
-
-        frames = []
-        overlay = OverlayWriter(out_dir / f"{video.stem}.overlay.mp4", width, height)
-        try:
-            while True:
-                ok, image = capture.read()
-                if not ok:
-                    break
-                index = len(frames)
-                result = detect(landmarker, image, round(index * 1000 / TARGET_FPS))
-                frame = frame_json(index, TARGET_FPS, result)
-                draw_skeleton(image, frame["landmarks"], frame["time_seconds"])
-                overlay.write(image)
-                frames.append(frame)
-            overlay.close()
-        finally:
-            capture.release()
-
-    data = {
-        "video": {
-            "width": width,
-            "height": height,
-            "fps": float(TARGET_FPS),
-            "frame_count": len(frames),
-        },
-        "model": model.name,
-        "frames": frames,
-    }
+    data = extract_keypoints(video, model, out_dir / f"{video.stem}.overlay.mp4")
     json_path = out_dir / f"{video.stem}.keypoints.json"
     json_path.write_text(json.dumps(data), encoding="utf-8")
     return data
@@ -98,14 +52,15 @@ def main() -> None:
     if not args.model.is_file():
         sys.exit(
             f"error: model file not found: {args.model}\n"
-            "Download it as shown in ai/README.md (Keypoint prototype)."
+            "Download it with `python download_model.py` "
+            "(see ai/README.md, Keypoint module)."
         )
 
     args.out.mkdir(parents=True, exist_ok=True)
     start = time.perf_counter()
     try:
         data = extract(args.video, args.out, args.model)
-    except VideoError as error:
+    except (VideoError, VideoTimeoutError, OverlayError) as error:
         sys.exit(f"error: {error}")
     seconds = time.perf_counter() - start
 

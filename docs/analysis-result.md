@@ -4,7 +4,7 @@ The result of analyzing one exercise video: the rep count (or hold time), form s
 
 - The **AI service** makes it: `POST /analyze` returns it.
 - The **backend** checks it, saves it, and records its own failures in the same shape.
-- The **frontend** shows it, using types generated from the backend's API (Orval) once an API route returns it (SCRUM-64).
+- The **frontend** shows it, using types generated from the backend's API (Orval). `GET /sessions/{session_id}/result` returns it (SCRUM-64, see Sessions, results, and progress in `backend/README.md`).
 
 This contract was set in SCRUM-28. The [decisions](#decisions) behind it, and how to change each one, are at the end of this page.
 
@@ -99,6 +99,7 @@ The contract rejects a result whose fields contradict each other, so the fronten
 - `status` is `"failed"`: show `error_message`, and offer a re-upload unless `error_code` is `unknown_exercise` (uploading again would fail the same way).
 - `hold_seconds` is not null: show the hold time. It can be `0`, so check for null, not for a true value. Otherwise, show `rep_count`.
 - Color `form_score` and each rep's `score` by [band](#scoring).
+- On the progress chart (`GET /patients/{patient_id}/progress`), each complete result is a point, with the same rules: chart `hold_seconds` for a hold exercise and `rep_count` for the others, and a null `form_score` (no rep or hold seen) is not a score of 0.
 
 ## Reps and holds
 
@@ -111,7 +112,7 @@ Most exercises are done in reps. The plank is held for time, so it has no reps.
 - A hold ends only when the patient leaves the position, for example by dropping to their knees or standing up. Poor form during the hold, such as sagging hips, is an issue inside that hold, not a break. The exact thresholds belong in the plank's spec.
 - If no hold is seen, the result is complete with `hold_seconds: 0`, no entries in `reps`, and `form_score: null`, like zero reps (see `plank-no-hold.json`).
 
-Whether an exercise is done in reps or held is not part of the contract. Today only the plank is a hold. The AI service knows it from its analyzers. The backend's `Exercise` table will need a field for it, because a plank's plan target is a time in seconds, not reps and sets (SCRUM-43).
+Whether an exercise is done in reps or held is not part of the contract. Today only the plank is a hold. The AI service knows it from its analyzers. The backend's `Exercise` table records it in its `kind` column (`reps` or `hold`), because a plank's plan target is a hold time in seconds instead of reps (SCRUM-43, see Data model in `backend/README.md`).
 
 **One video is one set.** Reps have no set number, so a plan of "3 sets of 30-second planks" means 3 uploads. If we later want several sets in one video, we can add an optional `set` field to each rep (an allowed change, see [Changing the contract](#changing-the-contract)).
 
@@ -152,9 +153,9 @@ Every code and its patient message is in `ERROR_MESSAGES` in the contract file, 
 ## Clip limits and timing
 
 - **Clips are 3 seconds to 2 minutes** (`MIN_VIDEO_SECONDS` and `MAX_VIDEO_SECONDS` in the contract file). Two minutes leaves time for older or injured patients, who may move slowly. The upload endpoint will import these constants to check the same limits before storing a video (SCRUM-44), and the AI service will check them again (SCRUM-73). Never copy the numbers into other code.
-- **Performance target:** a 2-minute clip analyzed in 3 minutes or less on Azure (SCRUM-74), counting from a cold start: starting the AI container from zero and downloading the video are part of the 3 minutes.
-- **Upper limit for the backend's call to the AI service:** the backend waits for `POST /analyze` in one HTTP request, and on Azure, Container Apps ends any HTTP request after 240 seconds (4 minutes). So the backend's call timeout (SCRUM-45) must be between 3 and 4 minutes, for example 230 seconds. Then the backend records `analysis_timed_out` itself before Azure cuts the call.
-- **Everything else that waits must wait longer, in this order:** the backend's call timeout (SCRUM-45) < the cutoff for sessions stuck in `processing` (SCRUM-66) ≤ the frontend's polling timeout (SCRUM-57). The stuck cutoff must be longer than the call timeout, so the cleanup never fails a session the background task is still waiting on. The frontend should not give up before the backend does. These two are not limited by Azure, because neither waits on one request.
+- **Performance target:** a 2-minute clip analyzed in 3 minutes or less on Azure (SCRUM-74), counting from a cold start: starting the AI container from zero and downloading the video are part of the 3 minutes. SCRUM-74 is on hold while the sponsor decides on hosting (`AGENTS.md`, section 2). Keep the limits below anyway, even though everything runs locally for now, so nothing has to change if the sponsor picks Azure.
+- **Upper limit for the backend's call to the AI service:** the backend waits for `POST /analyze` in one HTTP request, and on Azure, Container Apps ends any HTTP request after 240 seconds (4 minutes). So the backend's call timeout (SCRUM-45) must be between 3 and 4 minutes: `AI_SERVICE_TIMEOUT_SECONDS`, 230 seconds by default (`backend/README.md`, Config). Then the backend records `analysis_timed_out` itself before Azure cuts the call.
+- **Everything else that waits must wait longer, in this order:** the backend's call timeout (SCRUM-45) < the cutoff for sessions stuck in `processing` (SCRUM-66) ≤ the frontend's polling timeout (SCRUM-57). With the defaults: up to 10 seconds to connect plus 230 seconds for the answer, so 240 seconds < 270 seconds (`STUCK_SESSION_CUTOFF_SECONDS`) ≤ 300 seconds (`POLL_TIMEOUT_MS` in `frontend/src/hooks/useSessionStatus.ts`). The stuck cutoff must be longer than the call timeout plus the time to connect, so the cleanup never fails a session the background task is still waiting on; the backend refuses to start otherwise. The frontend should not give up before the backend does. These two are not limited by Azure, because neither waits on one request.
 - **If 2-minute clips don't fit:** if SCRUM-74 finds a 2-minute clip cannot be analyzed in time on Azure, lower `MAX_VIDEO_SECONDS`, or ask the team before changing how the backend hands off the work (a job queue is a Spring stretch goal).
 - **File size:** a 2-minute phone video can be a few hundred MB, more at 4K. The upload size limit is set in SCRUM-44.
 
@@ -207,7 +208,7 @@ These are the five exercises proposed to the sponsor (SCRUM-42). `exercise` in t
 - The AI service: its analyzers in `ai/app/analysis/exercises/`. Until those exist, `HOLD_EXERCISES` and `REP_EXERCISES` in `ai/app/main.py`.
 - The backend: the `Exercise` table (SCRUM-43), in a text column rather than a database enum, so changing the list adds or changes rows, not the table's structure.
 
-An unknown name fails with `unknown_exercise`. Adding or renaming an exercise changes a row in the `Exercise` table, which is done only with a new Alembic migration, never by hand (ask the backend team). The AI service's name must change at the same time. Whether a rename also affects saved sessions depends on the data model in SCRUM-43.
+An unknown name fails with `unknown_exercise`. Adding or renaming an exercise changes a row in the `Exercise` table, which is done only with a new Alembic migration, never by hand (ask the backend team). The AI service's name must change at the same time. Saved sessions point at the exercise's row, not its name, so a rename changes only that row and old sessions follow it (SCRUM-43).
 
 ## Versions
 
@@ -225,22 +226,23 @@ Results are saved in the database and kept, so a result saved before a change mu
 - **Do not rename or remove fields, or change their types.** If that is ever unavoidable, the same pull request needs an Alembic migration that rewrites the saved results.
 - **Adding an error code is fine:** add it to `ErrorCode` and `ERROR_MESSAGES` (a test checks every code has a message). Removing or renaming a code needs the migration.
 - **New validation rules** must still accept every result already saved.
-- Then copy the file to the backend, update this page and the examples, and, once the API returns results (SCRUM-64), regenerate the frontend's hooks (`npm run generate:api`, see `frontend/README.md`, Talking to the API).
+- Then copy the file to the backend, update this page and the examples, and regenerate the frontend's hooks (`npm run generate:api`, see `frontend/README.md`, Talking to the API): the API returns results (SCRUM-64), so its `AnalysisResult` type changes with the contract.
 
 ## How the backend stores it
 
 The backend builds this in SCRUM-43 (tables) and SCRUM-45 (calling the AI service).
 
 - Every finished session gets one `SessionResult` row holding this JSON, whether it completed or failed. The failure reason lives there, not on `Session`.
-- A session's result is saved once. After a session is `complete` or `failed`, it never changes, and a later answer for it is dropped (how is decided in SCRUM-45 and SCRUM-66).
+- A session's result is saved once. After a session is `complete` or `failed`, it never changes, and a later answer for it is dropped. The background task (SCRUM-45) locks the session's row and saves only while the session is still `processing`; the cleanup of stuck sessions (SCRUM-66) does the same, and skips a row that is locked already, because that session is being finished at that moment.
 - When the backend has no valid result (the AI service is down or answers with an error, the call times out, the answer does not match the contract, or the session is stuck), it saves a failed result itself with `AnalysisResult.failed(...)` and `analyzer_version=None`.
 - `Session.status` (`processing`, `complete`, or `failed`) is what the frontend polls. Once it is `complete` or `failed`, the `SessionResult` has the details.
 - The whole result is stored in one JSONB column, with no separate columns for `rep_count` or `form_score`. Postgres can still read fields inside it (for example `result->>'form_score'` for the progress chart). If a query ever needs it, a migration can add real columns.
 - The backend checks every result from the AI service against the contract before saving it. An answer that does not match is a bug, so the session is saved as failed with `analysis_unavailable` instead.
+- The API returns saved results as they are, checked against the contract again (SCRUM-64): `GET /sessions/{session_id}/result` returns a session's whole result (null while it is processing), and `GET /patients/{patient_id}/progress` returns the scores and counts of complete results, for the progress chart. See Sessions, results, and progress in `backend/README.md`.
 
 ## Examples
 
-`docs/analysis-result-examples/` has one file for each kind of result. Codes, messages, tips, metrics, and numbers in the example files are placeholders until the exercise specs (SCRUM-29) are written. The frontend can use them as test data until the API returns real results (SCRUM-64). The result view (SCRUM-59) is built before any API route returns this result, so Orval has no `AnalysisResult` type yet. Until then, write a temporary TypeScript type from the field tables on this page, outside the generated `src/api/` folder, and delete it once a route returns the result and the Orval hooks are regenerated.
+`docs/analysis-result-examples/` has one file for each kind of result. Codes, messages, tips, metrics, and numbers in the example files are placeholders until the exercise specs (SCRUM-29) are written. The frontend can use them as test data. The result view (SCRUM-59) was built before any API route returned this result, with a temporary TypeScript type outside the generated `src/api/` folder (`frontend/src/components/ResultView/types.ts`). `GET /sessions/{session_id}/result` returns it now (SCRUM-64), so once the Orval hooks are regenerated, use the generated `AnalysisResult` type and delete the temporary one.
 
 | File | Shows |
 | --- | --- |

@@ -24,6 +24,11 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Keep the pose model in the image so the reusable keypoint module can run in
+# Compose and Azure. The script verifies its fixed hash before saving it.
+COPY download_model.py .
+RUN python download_model.py
+
 COPY app ./app
 
 # Run as a non-root user. It gets a home folder because importing MediaPipe also loads

@@ -4,6 +4,7 @@ import { useRole } from '@/hooks/useRole';
 
 export default function RoleRedirect() {
   const { role, isLoading, isError } = useRole();
+
   if (isLoading) {
     return (
       <Center py="xl">

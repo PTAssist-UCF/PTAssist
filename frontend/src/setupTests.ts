@@ -16,3 +16,17 @@ window.matchMedia = (query: string): MediaQueryList => ({
   removeEventListener: () => {},
   dispatchEvent: () => false,
 });
+
+class ResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+window.ResizeObserver = ResizeObserver;
+
+if (typeof window.URL.createObjectURL === 'undefined') {
+  window.URL.createObjectURL = () => 'blob:http://localhost/mock-video-url';
+}
+if (typeof window.URL.revokeObjectURL === 'undefined') {
+  window.URL.revokeObjectURL = () => {};
+}

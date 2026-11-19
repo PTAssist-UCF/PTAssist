@@ -11,6 +11,7 @@ export default function RoleRoute({
   children: ReactNode;
 }) {
   const { role: myRole, isLoading } = useRole();
+
   if (isLoading) {
     return (
       <Center py="xl">

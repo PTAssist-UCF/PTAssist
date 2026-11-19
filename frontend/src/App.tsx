@@ -9,9 +9,13 @@ import RequireSignIn from '@/components/RequireSignIn';
 import SignInPage from './pages/SignInPage';
 import SignUpPage from './pages/SignUpPage';
 import PatientPage from './pages/patient/PatientPage';
+import UploadPage from './pages/patient/UploadPage';
 import TherapistPage from './pages/therapist/TherapistPage';
+import PlansPage from './pages/therapist/PlansPage';
+import PlanBuilderPage from './pages/therapist/PlanBuilderPage';
 import RoleRedirect from '@/components/RoleRedirect';
 import RoleRoute from '@/components/RoleRoute';
+import ComingSoon from '@/components/ComingSoon';
 
 export default function App() {
   // Without a publishable key (pk_test_...), Clerk never loads and every page would show a
@@ -42,10 +46,52 @@ export default function App() {
                 }
               />
               <Route
+                path="/patient/upload"
+                element={
+                  <RoleRoute role="patient">
+                    <UploadPage />
+                  </RoleRoute>
+                }
+              />
+              <Route
+                path="/patient/history"
+                element={
+                  <RoleRoute role="patient">
+                    <ComingSoon title="Results & History" />
+                  </RoleRoute>
+                }
+              />
+              <Route
                 path="/therapist"
                 element={
                   <RoleRoute role="therapist">
                     <TherapistPage />
+                  </RoleRoute>
+                }
+              />
+              {/* Plan Builder in the navigation: pick a patient, which opens the next page. */}
+              <Route
+                path="/therapist/plans"
+                element={
+                  <RoleRoute role="therapist">
+                    <PlansPage />
+                  </RoleRoute>
+                }
+              />
+              {/* The plan builder for one linked patient. The patient list links here too. */}
+              <Route
+                path="/therapist/patients/:patientId/plan"
+                element={
+                  <RoleRoute role="therapist">
+                    <PlanBuilderPage />
+                  </RoleRoute>
+                }
+              />
+              <Route
+                path="/therapist/progress"
+                element={
+                  <RoleRoute role="therapist">
+                    <ComingSoon title="Progress & Analytics" />
                   </RoleRoute>
                 }
               />
