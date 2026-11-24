@@ -301,7 +301,7 @@ Returns `{"status": "ok"}` while the server is up. Docker and Azure use it to ch
 
 ### `POST /analyze`
 
-For an exercise with an analyzer (`ANALYZERS` in `app/main.py`), it downloads `video_url` to a temporary folder, extracts the keypoints, runs the analyzer, and deletes the video. The download must be `http` or `https`, finish within 60 seconds, and be at most 500 MiB. At most 2 analyses run at once; other requests wait. These limits, and the 2-minute ffmpeg timeout, keep the work inside the backend's 230-second limit; SCRUM-74 confirms the numbers.
+For an exercise with an analyzer (`ANALYZERS` in `app/main.py`), it downloads `video_url` to a temporary folder, extracts the keypoints, runs the analyzer, and deletes the video. The download must be `http` or `https`, finish within 60 seconds, be at most 500 MiB, and arrive whole (as many bytes as its `Content-Length` says). Redirects are not followed and proxy settings in the environment are ignored. At most 2 analyses run at once; other requests wait. These limits, and the 2-minute ffmpeg timeout, keep the work inside the backend's 230-second limit; SCRUM-74 confirms the numbers.
 
 Exercises without an analyzer still get a made-up result in the real shape, with `analyzer_version` ending in `-stub`: for `plank` a hold result, for the rest the same result with 3 reps and no sides (`side` is null; see `side-leg-raise.json` for reps with sides). Each one switches to real analysis when its analyzer is added. Any other name fails with `unknown_exercise`.
 

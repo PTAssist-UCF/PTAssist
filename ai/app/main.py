@@ -20,11 +20,12 @@ import logging
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from fastapi import FastAPI
 
@@ -122,6 +123,46 @@ def run_analysis(request: AnalyzeRequest, analyzer: Analyzer) -> AnalysisResult:
     return analyzer(keypoints, ANALYZER_VERSION)
 
 
+class RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Fail on any redirect instead of following it.
+
+    urllib follows redirects on its own, to any host and even to ftp:// links, so a
+    redirect would get around the http(s) check in download(). The storage service
+    never redirects a video link, so a redirect fails like any other download error.
+    """
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> NoReturn:
+        raise urllib.error.HTTPError(
+            req.full_url, code, "Redirects are not followed", headers, fp
+        )
+
+
+def build_video_opener() -> urllib.request.OpenerDirector:
+    """An opener that refuses redirects and ignores proxy settings in the environment.
+
+    The empty ProxyHandler replaces the default one, which would read http_proxy.
+    """
+    return urllib.request.build_opener(
+        RefuseRedirects(), urllib.request.ProxyHandler({})
+    )
+
+
+VIDEO_OPENER = build_video_opener()
+
+
+def open_video(url: str, timeout: float) -> Any:
+    """Open the video link. Tests replace this to avoid the network."""
+    return VIDEO_OPENER.open(url, timeout=timeout)
+
+
 def download(url: str, target: Path) -> None:
     """Save the video at an http(s) link to target, within the time and size limits."""
     if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
@@ -129,9 +170,15 @@ def download(url: str, target: Path) -> None:
     deadline = time.monotonic() + DOWNLOAD_DEADLINE_SECONDS
     size = 0
     with (
-        urllib.request.urlopen(url, timeout=DOWNLOAD_READ_TIMEOUT_SECONDS) as response,
+        open_video(url, timeout=DOWNLOAD_READ_TIMEOUT_SECONDS) as response,
         target.open("wb") as file,
     ):
+        # When the server says how big the video is, refuse a video that is too large
+        # before reading it, and check below that all of it arrived.
+        length_header = response.headers.get("Content-Length")
+        expected = int(length_header) if length_header is not None else None
+        if expected is not None and expected > MAX_VIDEO_BYTES:
+            raise ValueError("The video is too large")
         # read1 returns as soon as data arrives, so a slow trickle still meets the
         # deadline check. read(n) would keep waiting until it had all n bytes.
         while chunk := response.read1(DOWNLOAD_CHUNK_BYTES):
@@ -141,6 +188,10 @@ def download(url: str, target: Path) -> None:
             if time.monotonic() > deadline:
                 raise TimeoutError("The video took too long to download")
             file.write(chunk)
+        # If the connection closes early, urllib returns what arrived without an
+        # error. A cut-off video must not be analyzed or called unreadable.
+        if expected is not None and size != expected:
+            raise ValueError("The download ended early")
 
 
 def stub_rep_result() -> AnalysisResult:

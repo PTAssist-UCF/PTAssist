@@ -4,8 +4,11 @@ Real analysis is tested with the download and keypoint steps replaced, so the te
 need no network, ffmpeg, or pose model.
 """
 
+import http.server
 import io
+import threading
 import urllib.error
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +40,12 @@ def analyze(exercise: str) -> AnalysisResult:
     assert response.status_code == 200
     # model_validate raises an error if the JSON does not match AnalysisResult.
     return AnalysisResult.model_validate(response.json())
+
+
+class FakeResponse(io.BytesIO):
+    """An in-memory stand-in for a download, with no Content-Length header."""
+
+    headers: dict[str, str] = {}
 
 
 def test_health_returns_ok() -> None:
@@ -199,7 +208,7 @@ def test_download_failure_returns_analysis_error_without_logging_the_link(
     def refuse(url: str, timeout: float) -> None:
         raise urllib.error.URLError(f"cannot reach {url}")
 
-    monkeypatch.setattr(main.urllib.request, "urlopen", refuse)
+    monkeypatch.setattr(main, "open_video", refuse)
 
     result = analyze(fake_exercise)
 
@@ -212,9 +221,7 @@ def test_download_failure_returns_analysis_error_without_logging_the_link(
 def test_download_streams_the_video_to_disk(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(
-        main.urllib.request, "urlopen", lambda url, timeout: io.BytesIO(b"bytes")
-    )
+    monkeypatch.setattr(main, "open_video", lambda url, timeout: FakeResponse(b"bytes"))
     target = tmp_path / "video"
 
     main.download("https://storage.example/video.mov?sig=abc", target)
@@ -225,9 +232,7 @@ def test_download_streams_the_video_to_disk(
 def test_download_stops_at_the_size_limit(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(
-        main.urllib.request, "urlopen", lambda url, timeout: io.BytesIO(b"bytes")
-    )
+    monkeypatch.setattr(main, "open_video", lambda url, timeout: FakeResponse(b"bytes"))
     monkeypatch.setattr(main, "MAX_VIDEO_BYTES", 3)
 
     with pytest.raises(ValueError, match="too large"):
@@ -237,13 +242,129 @@ def test_download_stops_at_the_size_limit(
 def test_download_stops_at_the_deadline(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(
-        main.urllib.request, "urlopen", lambda url, timeout: io.BytesIO(b"bytes")
-    )
+    monkeypatch.setattr(main, "open_video", lambda url, timeout: FakeResponse(b"bytes"))
     monkeypatch.setattr(main, "DOWNLOAD_DEADLINE_SECONDS", -1)
 
     with pytest.raises(TimeoutError, match="too long"):
         main.download("https://storage.example/video.mov", tmp_path / "video")
+
+
+@pytest.fixture
+def video_server() -> Iterator[str]:
+    """A real local web server whose paths behave like a storage service gone wrong."""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            if self.path == "/whole":
+                self.send_response(200)
+                self.send_header("Content-Length", "5")
+                self.end_headers()
+                self.wfile.write(b"bytes")
+            elif self.path == "/cut-off":
+                # Promises 10 bytes, sends 5, then closes the connection.
+                self.send_response(200)
+                self.send_header("Content-Length", "10")
+                self.end_headers()
+                self.wfile.write(b"bytes")
+                self.close_connection = True
+            elif self.path == "/huge":
+                self.send_response(200)
+                self.send_header("Content-Length", str(main.MAX_VIDEO_BYTES + 1))
+                self.end_headers()
+            elif self.path == "/redirect-ftp":
+                self.send_response(302)
+                self.send_header("Location", "ftp://internal.example/video.mp4")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            elif self.path == "/redirect-http":
+                self.send_response(302)
+                self.send_header("Location", "/whole")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            else:
+                self.send_error(404)
+
+        def log_message(self, format: str, *args: Any) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_download_saves_a_whole_video_from_a_real_server(
+    video_server: str, tmp_path: Path
+) -> None:
+    target = tmp_path / "video"
+
+    main.download(f"{video_server}/whole", target)
+
+    assert target.read_bytes() == b"bytes"
+
+
+def test_download_fails_when_the_server_sends_less_than_it_promised(
+    video_server: str, tmp_path: Path
+) -> None:
+    with pytest.raises(ValueError, match="ended early"):
+        main.download(f"{video_server}/cut-off", tmp_path / "video")
+
+
+def test_download_refuses_a_video_that_says_it_is_too_large(
+    video_server: str, tmp_path: Path
+) -> None:
+    with pytest.raises(ValueError, match="too large"):
+        main.download(f"{video_server}/huge", tmp_path / "video")
+
+
+@pytest.mark.parametrize("path", ["/redirect-ftp", "/redirect-http"])
+def test_download_does_not_follow_redirects(
+    video_server: str, path: str, tmp_path: Path
+) -> None:
+    with pytest.raises(urllib.error.HTTPError, match="Redirects are not followed"):
+        main.download(f"{video_server}{path}", tmp_path / "video")
+
+
+def test_a_cut_off_download_returns_analysis_error(
+    video_server: str, monkeypatch: pytest.MonkeyPatch, fake_exercise: str
+) -> None:
+    extracted: list[Path] = []
+    monkeypatch.setattr(
+        main, "extract_keypoints", lambda video, model: extracted.append(video)
+    )
+
+    response = client.post(
+        "/analyze",
+        json={
+            **REQUEST,
+            "exercise": fake_exercise,
+            "video_url": f"{video_server}/cut-off",
+        },
+    )
+
+    assert response.status_code == 200
+    assert AnalysisResult.model_validate(response.json()).error_code == "analysis_error"
+    assert extracted == []  # the partial video was never analyzed
+
+
+def test_downloads_ignore_proxy_settings_from_the_environment(
+    video_server: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A proxy that nothing listens on: the download fails if it goes through it.
+    for name in ("http_proxy", "HTTP_PROXY"):
+        monkeypatch.setenv(name, "http://127.0.0.1:9")
+    for name in ("no_proxy", "NO_PROXY"):
+        monkeypatch.setenv(name, "")
+    monkeypatch.setattr(main, "VIDEO_OPENER", main.build_video_opener())
+    target = tmp_path / "video"
+
+    main.download(f"{video_server}/whole", target)
+
+    assert target.read_bytes() == b"bytes"
 
 
 @pytest.mark.parametrize("url", ["file:///etc/passwd", "ftp://host/video.mp4"])
