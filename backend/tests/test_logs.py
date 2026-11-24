@@ -3,6 +3,9 @@ kept out of them. tests/test_sessions.py follows one whole upload through the lo
 
 The `logs` fixture (tests/conftest.py) sets up logging as the API does, but writes to a
 buffer that the tests read back.
+
+The AI service writes its logs with an exact copy of app/logs.py. The first test fails
+when someone changes one file without the other, and the AI service runs the same check.
 """
 
 import asyncio
@@ -12,11 +15,16 @@ import re
 import threading
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from fastapi.concurrency import run_in_threadpool
 
 from app.logs import HANDLER_NAME, configure_logging, redact, session_context
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+BACKEND_ORIGINAL = REPO_ROOT / "backend" / "app" / "logs.py"
+AI_COPY = REPO_ROOT / "ai" / "app" / "logs.py"
 
 SESSION_ID = uuid.UUID("2f1c7a4e-8d3b-4c55-9a1e-6b0d4e2f3a10")
 OTHER_SESSION_ID = uuid.UUID("9b8e1d02-55c4-4e0f-8f6a-0c3d7e1a2b45")
@@ -33,6 +41,20 @@ def access_logger() -> logging.Logger:
     access = logging.getLogger("uvicorn.access")
     access.setLevel(logging.INFO)
     return access
+
+
+def test_ai_copy_of_logs_matches_backend_original() -> None:
+    # read_text turns Windows line endings into "\n", so only real differences count.
+    backend_original = BACKEND_ORIGINAL.read_text(encoding="utf-8")
+    ai_copy = AI_COPY.read_text(encoding="utf-8")
+
+    assert ai_copy == backend_original, (
+        "ai/app/logs.py must be an exact copy of backend/app/logs.py. If you changed "
+        "the AI copy, make the same change in backend/app/logs.py first, because the "
+        "command below overwrites the AI copy. Then, from the repo root, run: "
+        "cp backend/app/logs.py ai/app/logs.py "
+        "(run pytest with -vv to see the whole difference)"
+    )
 
 
 def test_a_line_is_one_json_object(logs) -> None:

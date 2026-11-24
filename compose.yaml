@@ -93,6 +93,9 @@ services:
 
   ai:
     build: ./ai
+    environment:
+      # Same as the API's: JSON lines with the session id, or text.
+      LOG_FORMAT: ${LOG_FORMAT:-json}
     ports:
       - "127.0.0.1:8001:8001"
       - "[::1]:8001:8001"

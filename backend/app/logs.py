@@ -1,7 +1,11 @@
 """Structured logs (SCRUM-83): one JSON object per line, with the session id, and
 nothing personal.
 
-app/main.py calls configure_logging when it is imported. After that:
+This file is shared: backend/app/logs.py is the original, and ai/app/logs.py is an
+exact copy. Edit only the backend file, then copy it over from the repo root:
+`cp backend/app/logs.py ai/app/logs.py`. A test in each service fails if they differ.
+
+Each service's app/main.py calls configure_logging when it is imported. After that:
 
 - Log with logging.getLogger(__name__), as before. Our own lines (app.*) show from
   INFO, other libraries' from WARNING, because some of them (the Azure SDK, httpx) log

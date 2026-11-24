@@ -2,6 +2,10 @@
 
 [tool.ruff]
 target-version = "py312"
+# app/logs.py is an exact copy of backend/app/logs.py. Only the backend's ruff checks
+# and formats it, so the two services' ruff settings or versions can differ without
+# breaking the copy check.
+extend-exclude = ["app/logs.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
