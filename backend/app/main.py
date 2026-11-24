@@ -9,8 +9,9 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRoute
 
-from app.config import CLERK_AUTHORIZED_PARTIES, CLERK_SECRET_KEY
+from app.config import CLERK_AUTHORIZED_PARTIES, CLERK_SECRET_KEY, LOG_FORMAT
 from app.jobs.stuck_sessions import fail_stuck_sessions_at_startup
+from app.logs import configure_logging
 from app.routes import (
     exercises,
     health,
@@ -23,6 +24,11 @@ from app.routes import (
 from app.uploads import UploadSizeLimitMiddleware
 
 logger = logging.getLogger(__name__)
+
+# Every log line goes to stdout, uvicorn's included: JSON (or text, see LOG_FORMAT),
+# with the session id where there is one, and no personal data (app/logs.py,
+# backend/README.md, Logs). First, so the warning below is written that way too.
+configure_logging("api", LOG_FORMAT)
 
 # The API starts without the Clerk secret key (see app/config.py), so say so in its log
 # right away, not only when someone tries to sign in.

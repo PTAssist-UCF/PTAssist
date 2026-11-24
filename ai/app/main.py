@@ -17,6 +17,7 @@ ffmpeg and the pose model (see README).
 """
 
 import logging
+import os
 import tempfile
 import threading
 import time
@@ -32,7 +33,15 @@ from fastapi import FastAPI
 from app.analysis_contract import AnalysisResult, AnalyzeRequest, Issue, RepResult
 from app.keypoints.extract import DEFAULT_MODEL, extract_keypoints
 from app.keypoints.video import VideoError
+from app.logs import configure_logging, session_context
 from app.schemas import HealthResponse
+
+# Every log line goes to stdout, uvicorn's included: JSON (or text, with
+# LOG_FORMAT=text), with the session id where there is one, and no personal data
+# (app/logs.py, backend/README.md, Logs).
+configure_logging("ai", os.environ.get("LOG_FORMAT") or "json")
+
+logger = logging.getLogger(__name__)
 
 # The version of our analysis code. It is saved with every result, so we can tell
 # which results came from which version. Raise it whenever anything that can change a
@@ -65,7 +74,6 @@ MAX_VIDEO_BYTES = 500 * 1024 * 1024  # the backend's default upload limit
 MAX_CONCURRENT_ANALYSES = 2
 ANALYSIS_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_ANALYSES)
 
-logger = logging.getLogger(__name__)
 app = FastAPI(title="PTAssist AI service")
 
 
@@ -82,6 +90,31 @@ def analyze(request: AnalyzeRequest) -> AnalysisResult:
     Every failure, a bug included, is a failed result, never a 500 error. Never log
     the video link: anyone who has it can watch the video until it expires.
     """
+    # Every line logged inside carries the session id, so the analysis shows in the
+    # session's trace next to the backend's lines (app/logs.py).
+    with session_context(request.session_id):
+        logger.info("Analysis of session %s started", request.session_id)
+        started = time.monotonic()
+        result = analyze_request(request)
+        outcome = (
+            f"failed with {result.error_code}" if result.error_code else "complete"
+        )
+        logger.info(
+            "Analysis of session %s finished: %s",
+            request.session_id,
+            outcome,
+            extra={
+                "outcome": result.status,
+                "error_code": result.error_code,
+                "analyzer_version": result.analyzer_version,
+                "duration_seconds": round(time.monotonic() - started, 3),
+            },
+        )
+    return result
+
+
+def analyze_request(request: AnalyzeRequest) -> AnalysisResult:
+    """The result for one request: made up, failed, or from the exercise's analyzer."""
     if request.exercise in HOLD_EXERCISES:
         return stub_hold_result()
     if request.exercise in REP_EXERCISES:

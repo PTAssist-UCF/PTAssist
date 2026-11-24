@@ -77,3 +77,8 @@ if not (
         "STUCK_SESSION_CUTOFF_SECONDS must be longer than AI_SERVICE_TIMEOUT_SECONDS "
         f"plus {AI_SERVICE_CONNECT_TIMEOUT_SECONDS} seconds to connect"
     )
+
+# How the API writes its log lines (app/logs.py): "json", one JSON object per line
+# with the session id (backend/README.md, Logs), or "text", easier to read in a
+# terminal. Empty or unset: json. The API refuses to start with any other value.
+LOG_FORMAT = os.environ.get("LOG_FORMAT") or "json"

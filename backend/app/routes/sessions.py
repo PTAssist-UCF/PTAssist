@@ -68,7 +68,11 @@ def _delete_video(storage: Storage, key: str, session_id: uuid.UUID) -> None:
     except (AzureError, OSError):
         # Only a generated session UUID is logged. Cleanup failure must
         # not replace the original response or expose a video URL.
-        logger.warning("Upload cleanup failed for session %s", session_id)
+        logger.warning(
+            "Upload cleanup failed for session %s",
+            session_id,
+            extra={"session_id": session_id},
+        )
 
 
 @router.post("/sessions", status_code=201, response_model=SessionResponse)
@@ -141,6 +145,13 @@ def create_session(
         video.file.close()
     # Runs after the response is sent; the job opens its own database session.
     background_tasks.add_task(analyze_session, session_id)
+    # The first line of the session's trace in the logs (backend/README.md, Logs). Only
+    # the session id: never the file's name, the patient, or a video link.
+    logger.info(
+        "Session %s created: video stored, analysis scheduled",
+        session_id,
+        extra={"session_id": session_id},
+    )
     return response
 
 

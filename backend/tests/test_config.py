@@ -119,3 +119,15 @@ def test_a_longer_ai_service_timeout_needs_a_longer_stuck_session_cutoff(
     monkeypatch.setenv("STUCK_SESSION_CUTOFF_SECONDS", "300")
     with pytest.raises(ValueError, match="STUCK_SESSION_CUTOFF_SECONDS"):
         read_settings()
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_log_format_defaults_to_json(
+    monkeypatch: pytest.MonkeyPatch, value: str | None
+) -> None:
+    """JSON lines, which backend/README.md (Logs) shows how to filter by session."""
+    if value is None:
+        monkeypatch.delenv("LOG_FORMAT", raising=False)
+    else:
+        monkeypatch.setenv("LOG_FORMAT", value)
+    assert read_settings()["LOG_FORMAT"] == "json"

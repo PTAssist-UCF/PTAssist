@@ -81,6 +81,7 @@ In a second terminal, also in the repo root, `docker compose ps` should show all
 - Everything starts without `/.env`. Sign-in needs `CLERK_SECRET_KEY` (from the team), and storage needs `AZURITE_ACCOUNT_KEY` (see `/.env.example`).
 - The web app is not part of the stack: run it with `npm run dev` in `frontend/`. To sign in through it, see `frontend/README.md`, Try sign-in locally.
 - After you change code, run `docker compose up --build` again to rebuild.
+- To follow one upload through the logs of the API and the AI service by its session id, see `backend/README.md`, Logs.
 - `docker compose down` stops the stack and keeps the data. `docker compose down -v` also deletes the database and the stored files.
 - If `api` stops with "Can't locate revision", your database has a migration from another branch. `docker compose down -v` resets it (this deletes your local data).
 - Working on one service? Start only what it needs, for example `docker compose up -d db azurite` (`-d` runs them in the background), and run the service itself on your machine (see its README). If the full stack is already running, first stop the service you will run yourself, for example `docker compose stop api`, because it holds the same port.

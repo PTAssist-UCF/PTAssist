@@ -12,6 +12,7 @@ FastAPI, OpenCV, ffmpeg, MediaPipe Pose, pytest, ruff. Runtime dependencies in `
 app/
   main.py               The web server: GET /health and POST /analyze
   analysis_contract.py  The request and result shared with the backend (exact copy there)
+  logs.py               Log lines as JSON, with the session id (exact copy of the backend's, see Logs)
   schemas.py            Shapes used only here (the GET /health response)
   keypoints/            Video to body keypoints, with a reusable extractor and CLI
     video.py            ffmpeg: normalize the input video, write the overlay video
@@ -45,7 +46,7 @@ ruff format --check .
 
 On Windows, if PowerShell says running scripts is disabled, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once and try again.
 
-The service uses port 8001, so it can run next to the API on 8000. The API finds it through `AI_SERVICE_URL` in `/.env.example`. It needs no environment variables yet.
+The service uses port 8001, so it can run next to the API on 8000. The API finds it through `AI_SERVICE_URL` in `/.env.example`. It needs no environment variables. `LOG_FORMAT=text` makes its log lines easier to read in a terminal (see Logs).
 
 `/docs` is FastAPI's built-in page for trying the endpoints: open `POST /analyze`, click **Try it out**, and send a request.
 
@@ -68,6 +69,7 @@ The image also downloads the fixed Pose Landmarker Full model and checks its SHA
 - Other containers reach it at `http://ai:8001`, which is the API's `AI_SERVICE_URL` in Compose.
 - Its health check calls `/health` with Python, because the image has no `curl`.
 - In Compose, video read links start with `http://azurite:10000/`, which this container can open (see `backend/README.md`, Storage in Docker Compose).
+- Its only setting is `LOG_FORMAT`, from `/.env` (see Logs).
 
 ## Pipeline
 
@@ -349,6 +351,23 @@ Real analysis fails with:
 
 The clip length checks (`too_short`, `too_long`) and `multiple_people` are SCRUM-73.
 
+## Logs (SCRUM-83)
+
+The service writes every log line to stdout as one JSON object, uvicorn's lines included, the same way as the API. [`backend/README.md`, Logs](../backend/README.md#logs-scrum-83) describes the lines and shows how to follow one session through the logs of both services. Set `LOG_FORMAT=text` for one readable line per entry, such as when you run `uvicorn --reload` on your computer.
+
+- `POST /analyze` runs inside `with session_context(request.session_id):`, so every line logged during an analysis carries the session id in `session_id`, from our code or from a library it calls. It logs "Analysis of session <id> started" and "Analysis of session <id> finished: complete" (or "failed with <error code>"), with `outcome`, `error_code`, `analyzer_version`, and `duration_seconds`. Keep the real pipeline inside that `with` block, and log its errors there too: an error that escapes it is logged by uvicorn without the session id.
+- Log with `logging.getLogger(__name__)`. Our lines (`app.*`) show from `INFO`, other libraries' from `WARNING`.
+- Log ids, codes, and outcomes. Never log the video link or a result (results are health data). For an exception, log its type, not its message, which can hold the link: `extra={"error_type": type(error).__name__}`. A filter masks anything that looks like a link's query string, a token, or an email, but that is a backstop, not a reason to log such things.
+- Only the fields listed in `FIELDS` in `app/logs.py` are written. Any other `extra=` value is dropped.
+
+**`app/logs.py` is an exact copy of `backend/app/logs.py`.** Edit only the backend file, then copy it over from the repo root:
+
+```bash
+cp backend/app/logs.py ai/app/logs.py
+```
+
+A test in each service fails if the two files differ. Our ruff skips the copy (`extend-exclude` in `pyproject.toml`), because the backend's ruff checks the original.
+
 ## Adding an exercise
 
 1. Write its spec in `docs/exercises/`, following the template in [`docs/exercises/README.md`](../docs/exercises/README.md): camera angle, key joints, whether it is done in reps or held, what counts as one rep (or when a hold ends), and whether reps have a side. For each form rule: its threshold, and an issue code with a message (what went wrong), a tip (what to do), and a penalty. Also any metrics it reports, each name ending with its unit. See [`docs/analysis-result.md`](../docs/analysis-result.md) for how these fit the result.
@@ -378,7 +397,7 @@ Clips from 3 seconds to 2 minutes (`MIN_VIDEO_SECONDS` and `MAX_VIDEO_SECONDS` i
 The shared workflow in `/.github/workflows/pr-ci.yml` runs three AI checks on every pull request, next to the API's checks:
 
 - `AI lint`: ruff lint and formatting checks.
-- `AI tests`: pytest with Python 3.12 and `requirements-dev.txt`. This includes the check that the backend's copy of `app/analysis_contract.py` matches ours, and that every example in `docs/analysis-result-examples/` matches the contract.
+- `AI tests`: pytest with Python 3.12 and `requirements-dev.txt`. This includes the check that the backend's copy of `app/analysis_contract.py` matches ours, that our `app/logs.py` matches the backend's original, and that every example in `docs/analysis-result-examples/` matches the contract.
 - `AI image build`: builds the `Dockerfile` without pushing an image. Then, inside the image, it loads OpenCV and MediaPipe (including MediaPipe's native code) and runs ffmpeg, so a missing system library fails the check. Last, it starts the image and waits for `/health` to answer.
 
 Keep the job names stable: the repository ruleset matches checks by name (see `backend/README.md`, Required checks on main).
