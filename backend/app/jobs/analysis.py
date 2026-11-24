@@ -21,9 +21,13 @@ is dropped, for example one the cleanup failed while the job waited for the answ
 
 The read link is a secret and results are health data, so log lines carry only the
 session id and the outcome, never an exception's message or the AI service's answer.
+Each line the job logs also carries the session id as a field (session_context in
+app/logs.py), so one session can be followed through the logs (backend/README.md,
+Logs).
 """
 
 import logging
+import time
 import uuid
 
 import httpx
@@ -36,6 +40,7 @@ from app.config import (
     AI_SERVICE_URL,
 )
 from app.db import engine
+from app.logs import session_context
 from app.models import (
     Exercise,
     ExerciseSession,
@@ -61,17 +66,27 @@ def ai_service_client() -> httpx.Client:
 
 def analyze_session(session_id: uuid.UUID) -> None:
     """Analyze one uploaded video and save the outcome. Never raises."""
-    try:
-        result = _analyze(session_id)
-    except Exception as exc:
-        # A bug must not leave the session processing. Log only the exception's type:
-        # its message could hold the read link or part of the AI service's answer.
-        logger.error(
-            "Analysis of session %s crashed (%s)", session_id, type(exc).__name__
-        )
-        result = AnalysisResult.failed("analysis_unavailable", analyzer_version=None)
-    if result is not None:
-        _save(session_id, result)
+    # Runs in a worker thread of its own, after the upload's response, so the session
+    # id is set here: every line logged inside carries it.
+    with session_context(session_id):
+        logger.info("Analysis of session %s started", session_id)
+        try:
+            result = _analyze(session_id)
+        except Exception as exc:
+            # A bug must not leave the session processing. Log only the exception's
+            # type: its message could hold the read link or part of the AI service's
+            # answer.
+            logger.error(
+                "Analysis of session %s crashed (%s)",
+                session_id,
+                type(exc).__name__,
+                extra={"error_type": type(exc).__name__},
+            )
+            result = AnalysisResult.failed(
+                "analysis_unavailable", analyzer_version=None
+            )
+        if result is not None:
+            _save(session_id, result)
 
 
 def _analyze(session_id: uuid.UUID) -> AnalysisResult | None:
@@ -106,6 +121,8 @@ def _analyze(session_id: uuid.UUID) -> AnalysisResult | None:
 def _call_ai_service(request: AnalyzeRequest) -> AnalysisResult:
     """Call POST /analyze. Any answer that is not a valid result becomes a failure."""
     session_id = request.session_id
+    logger.info("Analysis of session %s sent to the AI service", session_id)
+    started = time.monotonic()
     try:
         with ai_service_client() as client:
             response = client.post("/analyze", json=request.model_dump(mode="json"))
@@ -115,6 +132,16 @@ def _call_ai_service(request: AnalyzeRequest) -> AnalysisResult:
         return _backend_failure(session_id, "analysis_timed_out", "no answer in time")
     except httpx.HTTPError:  # refused, or the connection broke
         return _backend_failure(session_id, "analysis_unavailable", "no connection")
+    # The status and how long the AI service took, never its answer (health data).
+    logger.info(
+        "Analysis of session %s: the AI service answered with HTTP %s",
+        session_id,
+        response.status_code,
+        extra={
+            "status_code": response.status_code,
+            "duration_seconds": round(time.monotonic() - started, 3),
+        },
+    )
     if response.status_code != 200:
         return _backend_failure(
             session_id, "analysis_unavailable", f"HTTP {response.status_code}"
@@ -132,7 +159,11 @@ def _backend_failure(
 ) -> AnalysisResult:
     """A failure the backend records itself, with the standard patient message."""
     logger.warning(
-        "Analysis of session %s failed with %s: %s", session_id, error_code, reason
+        "Analysis of session %s failed with %s: %s",
+        session_id,
+        error_code,
+        reason,
+        extra={"error_code": error_code},
     )
     return AnalysisResult.failed(error_code, analyzer_version=None)
 
@@ -178,8 +209,18 @@ def _store(session_id: uuid.UUID, result: AnalysisResult) -> bool:
             "Saving the analysis of session %s failed (%s)",
             session_id,
             type(exc).__name__,
+            extra={"error_type": type(exc).__name__},
         )
         return False
     outcome = f"failed with {result.error_code}" if result.error_code else "complete"
-    logger.info("Analysis of session %s saved: %s", session_id, outcome)
+    logger.info(
+        "Analysis of session %s saved: %s",
+        session_id,
+        outcome,
+        extra={
+            "outcome": result.status,
+            "error_code": result.error_code,
+            "analyzer_version": result.analyzer_version,
+        },
+    )
     return True

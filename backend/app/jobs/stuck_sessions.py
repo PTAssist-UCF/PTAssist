@@ -74,6 +74,7 @@ def fail_stuck_sessions(
         logger.warning(
             "Session %s failed with analysis_timed_out: stuck in processing",
             session_id,
+            extra={"session_id": session_id, "error_code": "analysis_timed_out"},
         )
     return failed
 
@@ -94,4 +95,5 @@ def fail_stuck_sessions_at_startup() -> None:
         logger.error(
             "The cleanup of stuck sessions at start-up failed (%s)",
             type(exc).__name__,
+            extra={"error_type": type(exc).__name__},
         )

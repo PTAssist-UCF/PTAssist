@@ -15,6 +15,7 @@ app/
   db.py      SQLAlchemy engine and the get_db session dependency
   seed.py    Local dev data: a linked therapist and patient with a plan (see Dev data)
   promote_therapist.py  Makes a user a therapist, by email (see Promote a therapist)
+  logs.py    Structured logs: JSON lines with the session id, nothing personal (see Logs)
   routes/    HTTP endpoints, grouped by area
   schemas/   Request and response models (Pydantic). analysis_contract.py is a copy, see Analysis results
   models/    Database tables (SQLAlchemy). Base class in base.py
@@ -573,10 +574,11 @@ can be saved, and the session stays `processing` until the cleanup of stuck
 sessions fails it (next section). The same happens if the API container stops during
 an analysis (a deploy, or scaling in).
 
-Log lines carry only the session id and the outcome (such as "failed with
-analysis_timed_out: no answer in time"), never the read link, an exception's
-message, or the AI service's answer. Only `WARNING` and above show without logging
-configuration, which covers every failure.
+The job logs each step with the session id: started, sent to the AI service, the
+AI service's HTTP status and how long it took, and the saved outcome (such as
+"failed with analysis_timed_out: no answer in time"). Never the read link, an
+exception's message, or the AI service's answer. See Logs, which shows how to
+follow one session through them.
 
 Each running analysis waits in one of the API's worker threads, the same pool of 40
 threads (anyio's default) that runs its other routes. That is plenty for the proof
@@ -626,7 +628,7 @@ deploy, scaling in, a crash).
   is dropped, and an analysis that starts after it (one that waited for a free worker
   thread, say) skips the session without calling the AI service.
 - **Logs:** one `WARNING` per failed session, with only its id ("Session <id> failed
-  with analysis_timed_out: stuck in processing").
+  with analysis_timed_out: stuck in processing"), also as `session_id` (see Logs).
 
 No migration: the sessions table already has the status and the upload time.
 
@@ -686,6 +688,99 @@ Progress is a list with one entry (`ExerciseProgress`) per exercise, ordered by 
 
 **Frontend handoff:** router tag `results` (`src/api/results.ts`); operation ids `list_patient_sessions`, `get_session_result`, and `get_patient_progress`. Regenerating the hooks (`npm run generate:api`) also brings the `AnalysisResult` type, with `RepResult` and `Issue`, which replaces the temporary type in `frontend/src/components/ResultView/types.ts` (SCRUM-59). `tests/test_results.py` covers each route with complete, failed, and processing sessions, the wrong owner, the wrong role, a role change on either side of a link, and no token, plus a result saved while the result route reads the session.
 
+## Logs (SCRUM-83)
+
+The API writes every log line to stdout as one JSON object, uvicorn's lines
+included. `app/logs.py` sets this up when `app/main.py` is imported. The last line of
+an analysis, for example:
+
+```json
+{"time": "2026-11-24T00:16:24.389Z", "level": "INFO", "service": "api", "logger": "app.jobs.analysis", "message": "Analysis of session 1ee39494-1b5b-4d82-bf68-d9ed7a7601ea saved: complete", "session_id": "1ee39494-1b5b-4d82-bf68-d9ed7a7601ea", "outcome": "complete", "analyzer_version": "0.2.0-stub"}
+```
+
+- **Every line** has `time` (UTC), `level`, `service` (`api`), `logger`, and
+  `message`. Some have more: `session_id`; `method`, `path`, and `status_code` for
+  requests; `duration_seconds`, `outcome`, `error_code`, and `analyzer_version` for
+  analyses; `error_type`, an exception's class name. Only these fields are written
+  (`FIELDS` in `app/logs.py`): any other `extra=` value is dropped, so a new field
+  must be added there, and only if it can never hold personal data, a token, or a
+  link.
+- **The session id** is on every line about a session: the upload ("Session <id>
+  created"), each step of the background analysis, the cleanup of stuck sessions,
+  and the web app's requests to `/sessions/<id>` paths, such as the status polling.
+  Code that works on one session runs inside `with session_context(session_id):`,
+  and every line logged inside gets the id, a library's warnings included. Only the
+  upload's own request line (`POST /sessions`) has none: the id is made during the
+  request, so "created" is the session's first line.
+- **Levels:** our own lines (`app.*`) from `INFO`, other libraries' from `WARNING`,
+  because the Azure SDK and httpx log request URLs at `INFO`. uvicorn's lines keep
+  uvicorn's levels.
+- **Nothing personal or secret.** Lines carry ids, codes, and outcomes, never names,
+  emails, tokens, file names, video links, or results (health data). For an
+  exception, log its type, not its message. Request lines leave out the caller's IP
+  address and the query string, and successful `GET /health` requests are not
+  logged at all (Docker Compose calls it every 5 seconds). As a safety net, every
+  message, field, and traceback is masked for anything that looks like an email
+  address, a bearer token or JWT, a Clerk key, a link's query string or fragment (a
+  read link keeps its signature in its query string), or a password or key in a
+  connection string. That is a backstop, not a reason to log such things.
+- **A crash** in a route is logged by uvicorn with its traceback in an `exception`
+  field, masked the same way.
+- **`LOG_FORMAT=text`** writes one readable line per entry instead, with the fields
+  as `name=value` after the message, for a terminal (such as `uvicorn --reload` on
+  your computer). The default is `json`.
+- Plain text, not JSON: the lines of `alembic upgrade head`, which the Compose `api`
+  service runs before it starts the server, and the lines of uvicorn's reloader when
+  it runs with `--reload`.
+
+### Follow one session locally
+
+With the stack running (`docker compose up`, root README), upload a video from the
+web app, then from the repo root:
+
+```bash
+docker compose logs api | grep "created: video stored"   # recent uploads' session ids
+docker compose logs -f api | grep <session id>            # one session, as it happens
+```
+
+In PowerShell, use `Select-String` in place of `grep`, for example
+`docker compose logs -f api | Select-String <session id>`.
+
+With [jq](https://jqlang.org), in bash (Git Bash on Windows):
+
+```bash
+# One short line per entry, in time order
+docker compose logs --no-log-prefix api | jq -rR --arg id <session id> 'fromjson? | select(.session_id == $id) | "\(.time) \(.service) \(.level) \(.message)"' | sort
+# Every field of those lines
+docker compose logs --no-log-prefix api | jq -cR --arg id <session id> 'fromjson? | select(.session_id == $id)'
+```
+
+`--no-log-prefix` leaves out Compose's `api-1 |` prefix, so each line is JSON, and
+`fromjson?` skips the few lines that are not (Alembic's). A session that completed
+reads:
+
+```
+2026-11-24T00:16:24.346Z api INFO Session 1ee39494-1b5b-4d82-bf68-d9ed7a7601ea created: video stored, analysis scheduled
+2026-11-24T00:16:24.347Z api INFO Analysis of session 1ee39494-1b5b-4d82-bf68-d9ed7a7601ea started
+2026-11-24T00:16:24.351Z api INFO Analysis of session 1ee39494-1b5b-4d82-bf68-d9ed7a7601ea sent to the AI service
+2026-11-24T00:16:24.382Z api INFO Analysis of session 1ee39494-1b5b-4d82-bf68-d9ed7a7601ea: the AI service answered with HTTP 200
+2026-11-24T00:16:24.389Z api INFO Analysis of session 1ee39494-1b5b-4d82-bf68-d9ed7a7601ea saved: complete
+2026-11-24T00:16:26.368Z api INFO GET /sessions/1ee39494-1b5b-4d82-bf68-d9ed7a7601ea 200
+2026-11-24T00:16:26.383Z api INFO GET /sessions/1ee39494-1b5b-4d82-bf68-d9ed7a7601ea/result 200
+```
+
+A failed analysis has a `WARNING` with the reason before its last line, such as
+"failed with analysis_unavailable: no connection", and ends "saved: failed with
+analysis_unavailable". The error codes are in
+[`docs/analysis-result.md`](../docs/analysis-result.md), Failures.
+
+A log query for Azure Container Apps waits until the sponsor decides on hosting
+(`AGENTS.md`, section 2).
+
+`tests/test_logs.py` covers the format, the fields, `session_context`, the masking,
+and uvicorn's lines. `tests/test_sessions.py` follows one upload through the logs and
+checks that no line holds the token, an email, the file's name, or the read link.
+
 ## Storage
 
 `app/storage/blob.py` is the only code that talks to storage. It uses the Azure Blob SDK against Azurite (Microsoft's Azure Storage emulator) locally and our Azure storage account in the cloud. There is one code path: only `STORAGE_CONNECTION_STRING` changes. Routes get it with the `get_storage` dependency, which tests can swap:
@@ -717,13 +812,13 @@ DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=${AZURITE_
 
 `AZURITE_ACCOUNT_KEY` is Azurite's well-known development key, published in Microsoft's Azurite documentation (the link is in `/.env.example`). It is not a real secret, but GitHub secret scanning flags it like any Azure storage key and may block the push, so it is not in the repo: each developer puts it in their own `/.env` (never committed). Without it the stack still starts and `/health` works, but storage calls in the Compose API fail with "The storage connection string has no account key to sign read links".
 
-Compose sets the `api` service's other settings itself and takes only `CLERK_SECRET_KEY`, `CLERK_AUTHORIZED_PARTIES`, `AZURITE_ACCOUNT_KEY`, `MAX_VIDEO_UPLOAD_BYTES`, `AI_SERVICE_TIMEOUT_SECONDS`, and `STUCK_SESSION_CUTOFF_SECONDS` from `/.env`. The other values in `/.env`, such as `DATABASE_URL` and `STORAGE_CONNECTION_STRING` (`UseDevelopmentStorage=true`), are for running the API on your computer.
+Compose sets the `api` service's other settings itself and takes only `CLERK_SECRET_KEY`, `CLERK_AUTHORIZED_PARTIES`, `AZURITE_ACCOUNT_KEY`, `MAX_VIDEO_UPLOAD_BYTES`, `AI_SERVICE_TIMEOUT_SECONDS`, `STUCK_SESSION_CUTOFF_SECONDS`, and `LOG_FORMAT` from `/.env`. The other values in `/.env`, such as `DATABASE_URL` and `STORAGE_CONNECTION_STRING` (`UseDevelopmentStorage=true`), are for running the API on your computer.
 
 Read links made in Compose start with `http://azurite:10000/`. The AI service container can open them; your browser cannot, because only containers in the stack know the name `azurite`.
 
 ## Config
 
-Read from environment variables (see `/.env.example`): database URL, Clerk settings, storage settings, the AI service's URL and timeout, and the cutoff for stuck sessions. No secrets in code. Settings are defined in `app/config.py`. Add new ones there and in `/.env.example`.
+Read from environment variables (see `/.env.example`): database URL, Clerk settings, storage settings, the AI service's URL and timeout, the cutoff for stuck sessions, and the log format. No secrets in code. Settings are defined in `app/config.py`. Add new ones there and in `/.env.example`.
 
 | Variable | Read by | What |
 | --- | --- | --- |
@@ -736,6 +831,7 @@ Read from environment variables (see `/.env.example`): database URL, Clerk setti
 | `AI_SERVICE_URL` | API | Where the background analysis sends `POST /analyze`. Default `http://localhost:8001`. Docker Compose sets `http://ai:8001`; in Azure, the AI container app's internal URL. See Background analysis |
 | `AI_SERVICE_TIMEOUT_SECONDS` | API | Seconds to wait for `POST /analyze` to answer before the session fails with `analysis_timed_out`. Positive number, default 230. In Azure keep it between 180 and 240 (see Session lifecycle) |
 | `STUCK_SESSION_CUTOFF_SECONDS` | API, Docker Compose | Seconds a session may stay `processing` after its upload before it is saved as failed with `analysis_timed_out`. Empty or unset: 30 more than the analysis can wait for the AI service (10 to connect plus `AI_SERVICE_TIMEOUT_SECONDS`), 270 by default. Must be longer than that wait, or the API does not start, and at most the web app's 300-second polling timeout. See Stuck sessions |
+| `LOG_FORMAT` | API, Docker Compose | `json` (default): one JSON object per log line, with the session id. `text`: one readable line per entry, for a terminal. Any other value stops the API from starting. See Logs |
 | `TEST_DATABASE_URL` | pytest | The test database. See Testing |
 | `TEST_STORAGE_CONNECTION_STRING` | pytest | The test storage, by default `UseDevelopmentStorage=true`. See Testing |
 | `AZURITE_ACCOUNT_KEY` | Docker Compose | Azurite's well-known key, for the `api` service's connection string. Not read by the API itself. See Storage in Docker Compose |
@@ -798,6 +894,15 @@ def test_example(client, clerk, ai_service) -> None:
     ai_service.status_code = 500  # or: ai_service.body = {...}, ai_service.error = httpx.ConnectError("refused")
     ...  # upload; the session ends failed with analysis_unavailable
     assert ai_service.requests[0]["exercise"] == "squat"  # what the job sent
+```
+
+To check what the API logs, use the `logs` fixture: it sets up logging as the API does, but writes to a buffer.
+
+```python
+def test_example(client, clerk, logs) -> None:
+    ...  # call the API
+    [line] = [line for line in logs.lines() if line.get("session_id") == session_id]
+    assert "@example.com" not in logs.text  # everything written, as text
 ```
 
 Every route needs a test that rejects the wrong role and the wrong owner. `tests/test_permissions.py` (SCRUM-68) has them for every route, in one grid. Each route's row says who may call it, and what the wrong role and the wrong owner get, or why nobody can be either. For each row, the grid checks that no token gets `401`, that each refused call gets the same answer as the same call about ids that don't exist and changes nothing in the database, and that the callers who may call it get through. `test_every_route_has_a_row` fails when a route has no row, so add one with each new route, as well as the route's own tests. A route that needs no token goes in `PUBLIC` instead, with the reason. Only `/health` and FastAPI's docs pages (`/openapi.json`, `/docs`, `/docs/oauth2-redirect`, and `/redoc`) are there.

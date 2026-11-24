@@ -1,5 +1,5 @@
 """Shared test setup: a real Postgres test database, real Azurite storage, a fake Clerk,
-and a fake AI service.
+a fake AI service, and the API's log lines.
 
 Tests never call Clerk. FakeClerk signs session tokens with a key made here and answers
 the two network calls the Clerk SDK makes, so the SDK still checks every token for real.
@@ -30,7 +30,9 @@ os.environ["STORAGE_CONNECTION_STRING"] = os.environ.get(
 )
 os.environ["STORAGE_CONTAINER"] = f"test-{uuid.uuid4().hex}"
 
+import io
 import json
+import logging
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -54,6 +56,7 @@ from sqlalchemy.orm import Session
 from app.auth.clerk import get_clerk
 from app.db import engine
 from app.jobs import analysis
+from app.logs import HANDLER_NAME, configure_logging
 from app.main import app
 from app.models import Base
 from app.storage.blob import Storage, get_storage
@@ -147,6 +150,57 @@ class FakeAIService:
         return httpx.Client(
             base_url="http://ai.test", transport=httpx.MockTransport(self.handle)
         )
+
+
+class CapturedLogs:
+    """The log lines the API writes during a test, as it writes them (app/logs.py), but
+    to a buffer instead of stdout."""
+
+    def __init__(self) -> None:
+        self.stream = io.StringIO()
+
+    def configure(self, log_format: str = "json") -> None:
+        """Set up logging as app/main.py does, writing to this buffer."""
+        configure_logging("api", log_format, stream=self.stream)
+
+    @property
+    def text(self) -> str:
+        """Everything written so far."""
+        return self.stream.getvalue()
+
+    def lines(self) -> list[dict[str, Any]]:
+        """The JSON lines written so far, parsed."""
+        return [json.loads(line) for line in self.text.splitlines()]
+
+
+# The loggers configure_logging changes, besides the root logger.
+CONFIGURED_LOGGERS = ("app", "uvicorn", "uvicorn.access")
+
+
+@pytest.fixture
+def logs() -> Iterator[CapturedLogs]:
+    """The API's log lines during the test (CapturedLogs). Puts the logging setup back
+    as it was afterwards."""
+    root = logging.getLogger()
+    # Only the API's own handler: pytest adds and removes its own (caplog's) itself.
+    api_handlers = [h for h in root.handlers if h.get_name() == HANDLER_NAME]
+    root_level = root.level
+    saved = [
+        (logger, list(logger.handlers), logger.level, logger.propagate)
+        for logger in map(logging.getLogger, CONFIGURED_LOGGERS)
+    ]
+    captured = CapturedLogs()
+    captured.configure()
+    yield captured
+    for handler in [h for h in root.handlers if h.get_name() == HANDLER_NAME]:
+        root.removeHandler(handler)
+    for handler in api_handlers:
+        root.addHandler(handler)
+    root.setLevel(root_level)
+    for logger, handlers, level, propagate in saved:
+        logger.handlers[:] = handlers
+        logger.setLevel(level)
+        logger.propagate = propagate
 
 
 @pytest.fixture(scope="session")

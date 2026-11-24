@@ -612,6 +612,61 @@ def test_filename_and_video_details_are_not_logged(
     assert "sig=" not in caplog.text
 
 
+def test_one_session_can_be_followed_through_the_logs(
+    client, clerk, assignment, make_video, ai_service, logs
+):
+    """SCRUM-83: the lines with the session's id tell its story from the upload to the
+    saved result, and no line holds the token, an email, the file's name, or the read
+    link (backend/README.md, Logs)."""
+    headers = clerk.headers("user_p")
+    response = client.post(
+        "/sessions",
+        data={"plan_exercise_id": str(assignment.id)},
+        files={"video": ("jane-doe-squat.mp4", make_video(), "video/mp4")},
+        headers=headers,
+    )
+    assert response.status_code == 201
+    session_id = response.json()["id"]
+    trace = [line for line in logs.lines() if line.get("session_id") == session_id]
+    assert [line["message"] for line in trace] == [
+        f"Session {session_id} created: video stored, analysis scheduled",
+        f"Analysis of session {session_id} started",
+        f"Analysis of session {session_id} sent to the AI service",
+        f"Analysis of session {session_id}: the AI service answered with HTTP 200",
+        f"Analysis of session {session_id} saved: complete",
+    ]
+    assert {line["service"] for line in trace} == {"api"}
+    answered, saved = trace[3], trace[4]
+    assert answered["status_code"] == 200
+    assert answered["duration_seconds"] >= 0
+    assert saved["outcome"] == "complete"
+    assert saved["analyzer_version"] == ai_service.body["analyzer_version"]
+    video_url = ai_service.requests[0]["video_url"]
+    token = headers["Authorization"].removeprefix("Bearer ")
+    for private in [token, "Bearer ", "@example.com", "jane-doe", video_url, "sig="]:
+        assert private not in logs.text
+
+
+def test_a_failed_analysis_logs_its_error_code(
+    client, clerk, assignment, make_video, ai_service, logs
+):
+    ai_service.error = httpx.ConnectError("Connection refused")
+    session_id = post_video(client, clerk, assignment, make_video()).json()["id"]
+    trace = [line for line in logs.lines() if line.get("session_id") == session_id]
+    failed, saved = trace[-2:]
+    assert failed["level"] == "WARNING"
+    assert failed["message"] == (
+        f"Analysis of session {session_id} failed with analysis_unavailable: "
+        "no connection"
+    )
+    assert failed["error_code"] == "analysis_unavailable"
+    assert saved["message"] == (
+        f"Analysis of session {session_id} saved: failed with analysis_unavailable"
+    )
+    assert (saved["outcome"], saved["error_code"]) == ("failed", "analysis_unavailable")
+    assert "analyzer_version" not in saved  # the backend's own failure has none
+
+
 def test_openapi_describes_upload_form_and_response():
     from app.main import app
 

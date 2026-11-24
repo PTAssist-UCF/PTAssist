@@ -74,6 +74,8 @@ services:
       AI_SERVICE_TIMEOUT_SECONDS: ${AI_SERVICE_TIMEOUT_SECONDS:-230}
       # Empty means the API's default, which follows AI_SERVICE_TIMEOUT_SECONDS.
       STUCK_SESSION_CUTOFF_SECONDS: ${STUCK_SESSION_CUTOFF_SECONDS:-}
+      # JSON lines with the session id (backend/README.md, Logs), or text.
+      LOG_FORMAT: ${LOG_FORMAT:-json}
     ports:
       - "127.0.0.1:8000:8000"
       - "[::1]:8000:8000"
