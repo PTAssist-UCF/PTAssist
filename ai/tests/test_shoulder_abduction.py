@@ -1,11 +1,18 @@
 """The analyzer on synthetic and real lifts (docs/exercises/shoulder-abduction.md)."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from app.analysis.exercises import shoulder_abduction
+from app.analysis.exercises.shoulder_abduction import (
+    CONFIG_PATH,
+    ISSUES,
+    Config,
+    analyze_shoulder_abduction,
+    load_config,
+)
 from app.analysis.framework import GOOD_FORM_FEEDBACK, NO_REPS_FEEDBACK
 from app.analysis_contract import AnalysisResult
 from tests.abduction_keypoints import REST, Pose, keypoints, lift
@@ -14,8 +21,10 @@ from tests.abduction_keypoints import REST, Pose, keypoints, lift
 REAL_CLIP = Path(__file__).parent / "fixtures/abduction_5r_5l_2b.keypoints.json"
 
 
-def analyze(keyframes: list, **options: object) -> AnalysisResult:
-    return shoulder_abduction.analyze(keypoints(keyframes, **options), "test")
+def analyze(
+    keyframes: list, config: Config | None = None, **options: object
+) -> AnalysisResult:
+    return analyze_shoulder_abduction(keypoints(keyframes, **options), "test", config)
 
 
 def sides(result: AnalysisResult) -> list[str | None]:
@@ -28,7 +37,7 @@ def codes(result: AnalysisResult) -> list[list[str]]:
 
 def test_a_real_recording_counts_every_rep_on_the_right_side() -> None:
     data = json.loads(REAL_CLIP.read_text(encoding="utf-8"))
-    result = shoulder_abduction.analyze(data, "test")
+    result = analyze_shoulder_abduction(data, "test")
     assert sides(result) == ["right"] * 5 + ["left"] * 5 + ["both"] * 2
     assert codes(result) == [["too_fast"]] * 12  # it was recorded quickly
 
@@ -111,7 +120,7 @@ def test_each_form_rule(rep: list, code: str) -> None:
     result = analyze(rep * 3)
     assert result.rep_count == 3
     assert codes(result) == [[code]] * 3
-    assert result.feedback == [shoulder_abduction.ISSUES[code].tip]
+    assert result.feedback == [ISSUES[code].tip]
 
 
 def test_a_both_rep_has_every_issue_of_either_arm_once() -> None:
@@ -174,3 +183,39 @@ def test_losing_a_torso_joint_skips_both_arms() -> None:
 def test_no_person_gives_no_reps() -> None:
     result = analyze(lift(left=95) * 2, missing=(0, 100))
     assert result.rep_count == 0 and result.feedback == [NO_REPS_FEEDBACK]
+
+
+def test_config_file_matches_the_spec() -> None:
+    assert load_config() == Config()
+
+
+def test_editing_the_json_changes_the_rule(tmp_path: Path) -> None:
+    raw = json.loads(CONFIG_PATH.read_text("utf-8"))
+    raw["shoulder_height_angle"] = 65.0  # a lift to 70 degrees is now high enough
+    path = tmp_path / "shoulder_abduction.json"
+    path.write_text(json.dumps(raw), "utf-8")
+    result = analyze(lift(left=70) * 2, load_config(path))
+    assert codes(result) == [[], []]
+
+
+def test_a_config_can_be_passed_in_code() -> None:
+    config = replace(Config(), min_rep_seconds=1.0)
+    assert codes(analyze(lift(right=95, seconds=1.5), config)) == [[]]
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"start_shoulder_angle": 20.0}, "shoulder angles"),
+        ({"count_shoulder_angle": 30.0}, "shoulder angles"),
+        ({"min_rep_seconds": float("nan")}, "finite"),
+        ({"shoulder_height": 80.0}, "unexpected keyword"),
+    ],
+)
+def test_bad_config_fails_with_a_clear_message(
+    change: dict, message: str, tmp_path: Path
+) -> None:
+    path = tmp_path / "shoulder_abduction.json"
+    path.write_text(json.dumps(change), "utf-8")
+    with pytest.raises(ValueError, match=message):
+        load_config(path)
