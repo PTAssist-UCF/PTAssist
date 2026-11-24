@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .extract import DEFAULT_MODEL, extract_keypoints
-from .video import OverlayError, VideoError, VideoTimeoutError
+from .video import NormalizeError, OverlayError, VideoError, VideoTimeoutError
 
 
 def extract(video: Path, out_dir: Path, model: Path) -> dict[str, Any]:
@@ -60,7 +60,7 @@ def main() -> None:
     start = time.perf_counter()
     try:
         data = extract(args.video, args.out, args.model)
-    except (VideoError, VideoTimeoutError, OverlayError) as error:
+    except (VideoError, VideoTimeoutError, NormalizeError, OverlayError) as error:
         sys.exit(f"error: {error}")
     seconds = time.perf_counter() - start
 
