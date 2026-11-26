@@ -84,7 +84,7 @@ video -> normalize (ffmpeg) -> keypoints (MediaPipe) -> analysis (rules per exer
 | Analysis | `app/analysis/` | Shared logic: joint angles, smoothing, rep splitting, scoring |
 | Exercise rules | `app/analysis/exercises/` | One file per exercise: what counts as a rep, form checks, feedback |
 
-**Keep keypoints and analysis separate.** Analysis takes keypoint frames, never video. That lets live feedback (a Spring goal) reuse the same analysis code on frames from a camera.
+**Keep keypoints and analysis separate.** Analysis takes keypoint frames, never video. That lets live feedback (a Spring goal) reuse the same analysis code on frames from a camera (see [Live-feedback readiness](#live-feedback-readiness-scrum-91)).
 
 ### Keypoint module (SCRUM-49)
 
@@ -282,6 +282,16 @@ overall score by hold duration. Issue messages, tips, and penalties come from
 `IssueDefinition`. Scores round exact halves up. The empty and issue-free
 feedback lines match `docs/analysis-result.md`. `tests/test_framework.py` uses a
 placeholder analyzer to check the resulting contract.
+
+### Live-feedback readiness (SCRUM-91)
+
+Live feedback (a Spring goal) will send keypoint frames from a camera one at a time, with no video file. The analysis code already works that way, so live feedback can reuse it unchanged. Nothing for live feedback itself (camera, transport, or screens) is built yet.
+
+- `SquatAnalyzer.update(landmarks, timestamp, width, height)` takes one frame and returns a `FrameResult` with the running rep count and message. It uses only frames it has already seen: the smoothing looks only at past values, and a rep counts on the frame where the patient is back standing. A counted rep never changes later.
+- `analyze_squat` is a loop over `update`, so a whole clip and the same frames sent one at a time give the same result.
+- A live caller keeps one `SquatAnalyzer` for the session (`reset()` starts over), turns each landmark into `Landmark(*values)` as for the keypoint JSON, passes `None` for a frame without a person, and gives timestamps in seconds that always increase, with the frame's width and height in pixels. `result(version)` builds the usual `AnalysisResult` at any time.
+
+`tests/test_frame_by_frame.py` checks this on synthetic keypoints, including tracking lost for a short and a long time, a partial rep, a clip that ends during a rep, and a patient who turns around. Frame by frame, it gets the same reps, scores, and feedback as the whole clip, and after every frame exactly the reps that have ended so far. A second Python process checks that running the analysis loads no keypoint, OpenCV, or MediaPipe code.
 
 ## API
 
