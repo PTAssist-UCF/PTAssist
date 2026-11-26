@@ -119,7 +119,15 @@ export default function AppShellLayout({ children }: { children?: ReactNode }) {
                 to="/therapist"
                 label="Patients"
                 description="Patient roster & status"
-                active={location.pathname === '/therapist'}
+                active={
+                  location.pathname === '/therapist' ||
+                  // Also on a patient's detail page and their sessions' results.
+                  matchPath('/therapist/patients/:patientId', location.pathname) !== null ||
+                  matchPath(
+                    '/therapist/patients/:patientId/sessions/:sessionId',
+                    location.pathname,
+                  ) !== null
+                }
                 onClick={close}
               />
               <NavLink

@@ -124,6 +124,12 @@ function PlanPage() {
   return <div>Plan page for {patientId}</div>;
 }
 
+/** Stands in for the patient's detail page (SCRUM-95) that each email links to. */
+function DetailPage() {
+  const { patientId } = useParams();
+  return <div>Detail page for {patientId}</div>;
+}
+
 /**
  * Opens the page at /therapist, wrapped the way main.tsx and App.tsx wrap it. Returns the
  * page's query client, to make it read again.
@@ -137,6 +143,7 @@ function renderPage() {
         <MemoryRouter initialEntries={['/therapist']}>
           <Routes>
             <Route path="/therapist" element={<TherapistPage />} />
+            <Route path="/therapist/patients/:patientId" element={<DetailPage />} />
             <Route path="/therapist/patients/:patientId/plan" element={<PlanPage />} />
           </Routes>
         </MemoryRouter>
@@ -297,6 +304,19 @@ describe('patient list', () => {
     fireEvent.click(plan);
 
     expect(await screen.findByText(`Plan page for ${ANA.id}`)).toBeDefined();
+  });
+
+  it("links each patient's email to their detail page, with all their sessions", async () => {
+    fakeApi((method, path) => answerReads(method, path, [ANA, BEN]));
+    renderPage();
+
+    const ben = await findRow('ben@example.com');
+    const detail = within(ben).getByRole('link', { name: 'ben@example.com' });
+    expect(detail.getAttribute('href')).toBe(`/therapist/patients/${BEN.id}`);
+
+    fireEvent.click(detail);
+
+    expect(await screen.findByText(`Detail page for ${BEN.id}`)).toBeDefined();
   });
 });
 
