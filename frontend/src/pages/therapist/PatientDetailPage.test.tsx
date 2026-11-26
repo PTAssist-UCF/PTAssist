@@ -250,6 +250,37 @@ describe('PatientDetailPage', () => {
     expect(requestsTo(api, ANA_SESSIONS_PATH)).toBe(2);
   });
 
+  it('shows an error with Try again when a check fails, keeps the list, and recovers', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const answers = apiAnswers();
+    const api = fakeApi(answers);
+    renderPage();
+    const [newest] = await findSessionRows();
+    expect(within(newest).getByText('Processing')).toBeDefined();
+
+    // The next check fails.
+    answers[`GET ${ANA_SESSIONS_PATH}`] = { status: 503, body: { detail: 'Database is down.' } };
+    await act(() => vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS));
+
+    expect(await screen.findByText("Couldn't check for new results")).toBeDefined();
+    expect(screen.getByText('The API answered 503: Database is down.')).toBeDefined();
+    // The last list stays on screen, and the page stops asking until told to.
+    expect(within(newest).getByText('Processing')).toBeDefined();
+    await act(() => vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 5));
+    expect(requestsTo(api, ANA_SESSIONS_PATH)).toBe(2);
+
+    // The API is back and the analysis has finished.
+    answers[`GET ${ANA_SESSIONS_PATH}`] = {
+      status: 200,
+      body: [{ ...ANA_LEG_RAISE, status: 'complete' }, ANA_SQUAT, ANA_PLANK],
+    };
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await within(newest).findByText('Complete')).toBeDefined();
+    expect(screen.queryByText("Couldn't check for new results")).toBeNull();
+    expect(requestsTo(api, ANA_SESSIONS_PATH)).toBe(3);
+  });
+
   it("doesn't check again when no session is processing", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     // Ben's only session is complete.

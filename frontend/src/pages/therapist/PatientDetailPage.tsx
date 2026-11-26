@@ -156,63 +156,80 @@ function SessionList({
     );
   }
 
+  // A refresh that failed after the list loaded, for example while checking on a
+  // processing session. Polling stops after an error, so without this the list would keep
+  // showing "Processing" with no sign that it stopped being checked.
+  const refreshError = error ? (
+    <LoadErrorAlert
+      title="Couldn't check for new results"
+      error={error}
+      retrying={retrying}
+      onRetry={onRetry}
+    />
+  ) : null;
+
   if (!sessions.length) {
     return (
-      <EmptyState
-        size="sm"
-        py="xl"
-        title="No sessions yet"
-        description="Each video the patient uploads for an exercise of their plan shows here, with its result."
-      />
+      refreshError ?? (
+        <EmptyState
+          size="sm"
+          py="xl"
+          title="No sessions yet"
+          description="Each video the patient uploads for an exercise of their plan shows here, with its result."
+        />
+      )
     );
   }
 
   return (
-    <Table.ScrollContainer minWidth={480}>
-      <Table highlightOnHover verticalSpacing="sm">
-        <Table.Thead>
-          <Table.Tr>
-            <Table.Th>Exercise</Table.Th>
-            <Table.Th>Uploaded</Table.Th>
-            <Table.Th>Status</Table.Th>
-            <Table.Th>
-              <VisuallyHidden>Result</VisuallyHidden>
-            </Table.Th>
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          {sessions.map((session) => {
-            const uploaded = formatDateTime(session.created_at);
-            return (
-              <Table.Tr key={session.id}>
-                <Table.Td fw={500}>{session.exercise_display_name}</Table.Td>
-                <Table.Td>
-                  <Text size="sm" component="time" dateTime={session.created_at}>
-                    {uploaded}
-                  </Text>
-                </Table.Td>
-                <Table.Td>
-                  <SessionStatusBadge status={session.status} />
-                </Table.Td>
-                <Table.Td>
-                  <Group justify="flex-end">
-                    <Button
-                      component={Link}
-                      to={sessionPath(patientId, session.id)}
-                      size="xs"
-                      variant="light"
-                      color="teal"
-                      aria-label={`Open the ${session.exercise_display_name} session from ${uploaded}`}
-                    >
-                      Open
-                    </Button>
-                  </Group>
-                </Table.Td>
-              </Table.Tr>
-            );
-          })}
-        </Table.Tbody>
-      </Table>
-    </Table.ScrollContainer>
+    <Stack gap="md">
+      {refreshError}
+      <Table.ScrollContainer minWidth={480}>
+        <Table highlightOnHover verticalSpacing="sm">
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>Exercise</Table.Th>
+              <Table.Th>Uploaded</Table.Th>
+              <Table.Th>Status</Table.Th>
+              <Table.Th>
+                <VisuallyHidden>Result</VisuallyHidden>
+              </Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {sessions.map((session) => {
+              const uploaded = formatDateTime(session.created_at);
+              return (
+                <Table.Tr key={session.id}>
+                  <Table.Td fw={500}>{session.exercise_display_name}</Table.Td>
+                  <Table.Td>
+                    <Text size="sm" component="time" dateTime={session.created_at}>
+                      {uploaded}
+                    </Text>
+                  </Table.Td>
+                  <Table.Td>
+                    <SessionStatusBadge status={session.status} />
+                  </Table.Td>
+                  <Table.Td>
+                    <Group justify="flex-end">
+                      <Button
+                        component={Link}
+                        to={sessionPath(patientId, session.id)}
+                        size="xs"
+                        variant="light"
+                        color="teal"
+                        aria-label={`Open the ${session.exercise_display_name} session from ${uploaded}`}
+                      >
+                        Open
+                      </Button>
+                    </Group>
+                  </Table.Td>
+                </Table.Tr>
+              );
+            })}
+          </Table.Tbody>
+        </Table>
+      </Table.ScrollContainer>
+    </Stack>
   );
 }
