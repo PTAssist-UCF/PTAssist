@@ -6,6 +6,20 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import App from './App';
 import { setTokenGetter } from '@/apiClient';
+import { resultPath } from '@/pages/patient/sessionDisplay';
+import { SQUAT } from '@/pages/patient/testPlan';
+import {
+  COMPLETE_SQUAT,
+  PROGRESS_PATH,
+  SESSIONS_PATH,
+  STUB_REPS_RESULT,
+  fakeResultsApi,
+  pointOf,
+  progressOf,
+  requestsTo,
+  resultApiPath,
+  withResult,
+} from '@/pages/patient/testSessions';
 
 /** The ClerkProvider settings that App.tsx passes, which the fake keeps for the tests. */
 type ClerkSettings = {
@@ -388,20 +402,16 @@ describe('app shell and role navigation', () => {
     expect(progressLink.getAttribute('data-active')).toBe('true');
   });
 
-  it.each([
-    ['patient', '/patient/history', 'Results & History'],
-    ['therapist', '/therapist/progress', 'Progress & Analytics'],
-  ])('shows a "Coming soon" page for the %s page %s', async (role, path, title) => {
+  it('shows a "Coming soon" page for the therapist page /therapist/progress', async () => {
     clerk.isSignedIn = true;
-    api = fakeApi(200, { ...ME, role });
+    api = fakeApi(200, { ...ME, role: 'therapist' });
     vi.stubGlobal('fetch', api);
 
-    renderApp(path);
+    renderApp('/therapist/progress');
 
-    expect(await screen.findByRole('heading', { name: title })).toBeDefined();
+    expect(await screen.findByRole('heading', { name: 'Progress & Analytics' })).toBeDefined();
     expect(screen.getByText('Coming soon.')).toBeDefined();
     // Not the main page of that side.
-    expect(screen.queryByText('My Exercise Plan')).toBeNull();
     expect(screen.queryByText('Assigned Patients')).toBeNull();
   });
 
@@ -540,6 +550,58 @@ describe('plan builder pages', () => {
     expect(paths.some((path) => path.startsWith('/therapist') || path === '/exercises')).toBe(
       false,
     );
+  });
+});
+
+describe('results and history pages', () => {
+  // The patient pages' test data. Its patient is ME, by the same id.
+  const SESSION_RESULT = withResult(COMPLETE_SQUAT, STUB_REPS_RESULT);
+
+  /** A fake API for ME as a patient with one complete session, answering by path. */
+  function fakeHistoryApi(role = 'patient') {
+    return fakeResultsApi({
+      '/me': [[200, { ...ME, role }]],
+      [SESSIONS_PATH]: [[200, [COMPLETE_SQUAT]]],
+      [PROGRESS_PATH]: [[200, progressOf([SQUAT, [pointOf(COMPLETE_SQUAT, STUB_REPS_RESULT)]])]],
+      [resultApiPath(COMPLETE_SQUAT)]: [[200, SESSION_RESULT]],
+    });
+  }
+
+  it("shows the patient's sessions at /patient/history, each linking to its result", async () => {
+    clerk.isSignedIn = true;
+    fakeHistoryApi();
+
+    renderApp('/patient/history');
+
+    expect(await screen.findByRole('heading', { name: 'Results & History' })).toBeDefined();
+    const session = await screen.findByTestId(`session-${COMPLETE_SQUAT.id}`);
+    expect(session.getAttribute('href')).toBe(resultPath(COMPLETE_SQUAT.id));
+    expect(screen.queryByText('Coming soon.')).toBeNull();
+    const navLink = screen.getByRole('link', { name: /results & history/i });
+    expect(navLink.getAttribute('data-active')).toBe('true');
+  });
+
+  it("opens one session's result at /patient/history/:sessionId, still under Results & History", async () => {
+    clerk.isSignedIn = true;
+    fakeHistoryApi();
+
+    renderApp(resultPath(COMPLETE_SQUAT.id));
+
+    expect(await screen.findByRole('heading', { name: 'Squat' })).toBeDefined();
+    expect((await screen.findByTestId('main-value')).textContent).toBe('3');
+    const navLink = screen.getByRole('link', { name: /results & history/i });
+    expect(navLink.getAttribute('data-active')).toBe('true');
+  });
+
+  it("keeps a therapist out of the patient's results, and sends no results request", async () => {
+    clerk.isSignedIn = true;
+    const api = fakeHistoryApi('therapist');
+
+    renderApp(resultPath(COMPLETE_SQUAT.id));
+
+    await waitFor(() => expect(window.location.pathname).toBe('/therapist'));
+    expect(requestsTo(api, resultApiPath(COMPLETE_SQUAT))).toBe(0);
+    expect(requestsTo(api, SESSIONS_PATH)).toBe(0);
   });
 });
 

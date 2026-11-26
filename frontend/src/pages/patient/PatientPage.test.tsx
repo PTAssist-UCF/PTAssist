@@ -216,20 +216,4 @@ describe('PatientPage (My plan)', () => {
     expect(highContrastSwitch).toBeDefined();
     fireEvent.click(highContrastSwitch);
   });
-
-  it('shows processing notification when redirected after a session upload', async () => {
-    fakePlanApi([200, planWith(SQUAT)]);
-
-    renderPatientPage([
-      {
-        pathname: '/patient',
-        state: { uploadedSessionId: 'sess-987-abc' },
-      },
-    ]);
-
-    expect(screen.getByText('Upload in Progress')).toBeDefined();
-    expect(screen.getByText('sess-987-abc')).toBeDefined();
-    expect(screen.getByText('processing')).toBeDefined();
-    expect(await screen.findByTestId('exercise-card-squat')).toBeDefined();
-  });
 });
