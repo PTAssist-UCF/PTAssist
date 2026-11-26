@@ -1,0 +1,15 @@
+{
+  "min_landmark_confidence": 0.65,
+  "frame_margin": 0.025,
+  "smoothing_tau_seconds": 0.12,
+  "max_missing_seconds": 0.75,
+  "rest_shoulder_angle": 25.0,
+  "start_shoulder_angle": 35.0,
+  "count_shoulder_angle": 60.0,
+  "shoulder_height_angle": 80.0,
+  "elbow_check_from_shoulder_angle": 55.0,
+  "bent_elbow_angle": 150.0,
+  "excessive_torso_lean_degrees": 18.0,
+  "min_rep_seconds": 2.0,
+  "pair_within_seconds": 1.0
+}
