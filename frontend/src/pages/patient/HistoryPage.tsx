@@ -186,7 +186,13 @@ function SessionCard({
           </Text>
         </Group>
       </Group>
-      <SessionSummaryLine status={status} point={point} />
+      <SessionSummaryLine
+        status={status}
+        point={point}
+        // Polling stopped before the analysis finished: the status request kept failing,
+        // or the timeout passed. The result page can check again.
+        stoppedChecking={status === 'processing' && (live.timedOut || Boolean(live.error))}
+      />
     </Card>
   );
 }
@@ -195,10 +201,19 @@ function SessionCard({
 function SessionSummaryLine({
   status,
   point,
+  stoppedChecking,
 }: {
   status: SessionSummary['status'];
   point: ProgressPoint | undefined;
+  stoppedChecking: boolean;
 }) {
+  if (stoppedChecking) {
+    return (
+      <Text size="sm" c="orange.8" mt="xs">
+        We stopped checking on this video. Open it to check again.
+      </Text>
+    );
+  }
   if (status === 'processing') {
     return (
       <Text size="sm" c="dimmed" mt="xs">

@@ -6,7 +6,7 @@ import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 
 import { getGetMeQueryKey } from '@/api/me';
 import { getGetPatientProgressQueryKey, getListPatientSessionsQueryKey } from '@/api/results';
-import { POLL_INTERVAL_MS } from '@/hooks/useSessionStatus';
+import { POLL_INTERVAL_MS, POLL_TIMEOUT_MS } from '@/hooks/useSessionStatus';
 import HistoryPage from './HistoryPage';
 import { formatDateTime, resultPath } from './sessionDisplay';
 import { PLANK, SQUAT } from './testPlan';
@@ -194,6 +194,52 @@ describe('HistoryPage (Results & History)', () => {
     // Done: no more polling.
     await advance(POLL_INTERVAL_MS * 5);
     expect(requestsTo(api, statusApiPath(PROCESSING_SQUAT))).toBe(2);
+  });
+
+  it('says so when checking on a processing session fails, and points to its result page', async () => {
+    vi.useFakeTimers();
+    fakeResultsApi({
+      '/me': [[200, ME]],
+      [SESSIONS_PATH]: [[200, [PROCESSING_SQUAT]]],
+      [PROGRESS_PATH]: [[200, []]],
+      [statusApiPath(PROCESSING_SQUAT)]: [[503, { detail: 'Service unavailable' }]],
+    });
+
+    renderHistory();
+    await advance(0);
+
+    const stopped = within(card(PROCESSING_SQUAT));
+    expect(
+      stopped.getByText('We stopped checking on this video. Open it to check again.'),
+    ).toBeDefined();
+    expect(stopped.queryByText('Analyzing your video...')).toBeNull();
+    expect(card(PROCESSING_SQUAT).getAttribute('href')).toBe(resultPath(PROCESSING_SQUAT.id));
+  });
+
+  it('says so when a processing session passes the polling timeout', async () => {
+    vi.useFakeTimers();
+    const api = fakeResultsApi({
+      '/me': [[200, ME]],
+      [SESSIONS_PATH]: [[200, [PROCESSING_SQUAT]]],
+      [PROGRESS_PATH]: [[200, []]],
+      [statusApiPath(PROCESSING_SQUAT)]: [[200, statusOf(PROCESSING_SQUAT, 'processing')]],
+    });
+
+    renderHistory();
+    await advance(0);
+    expect(within(card(PROCESSING_SQUAT)).getByText('Analyzing your video...')).toBeDefined();
+
+    await advance(POLL_TIMEOUT_MS + POLL_INTERVAL_MS);
+
+    expect(
+      within(card(PROCESSING_SQUAT)).getByText(
+        'We stopped checking on this video. Open it to check again.',
+      ),
+    ).toBeDefined();
+    // Polling has stopped.
+    const polls = requestsTo(api, statusApiPath(PROCESSING_SQUAT));
+    await advance(POLL_INTERVAL_MS * 5);
+    expect(requestsTo(api, statusApiPath(PROCESSING_SQUAT))).toBe(polls);
   });
 
   it('asks for the list again whenever the page opens, so a new upload shows up', async () => {
