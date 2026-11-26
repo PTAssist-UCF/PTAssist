@@ -35,6 +35,7 @@ import {
 } from '@/utils/videoValidation';
 import PlanStatus from './PlanStatus';
 import { describeFrequency, describeTarget, uploadPath } from './planDisplay';
+import { resultPath } from './sessionDisplay';
 
 // POST /sessions answers 404 with this detail when the plan exercise isn't in the
 // patient's plan (get_owned_plan_exercise in backend/app/routes/sessions.py). Any other
@@ -235,7 +236,7 @@ function UploadForm({
 
   // When the form goes away (the address names another exercise, or the patient leaves
   // the page), stop what it still has running for its video: the upload, the preview, and
-  // the move back to the plan after an upload. A length check that hasn't finished can't
+  // the move to its result page after an upload. A length check that hasn't finished can't
   // change anything any more: its result goes to this form, which is gone.
   useEffect(() => {
     return () => {
@@ -372,14 +373,9 @@ function UploadForm({
       setCreatedSession(session);
       setIsUploading(false);
 
-      // Automatically navigate back to /patient after successful upload
+      // Then open the new session's result page, which polls until the analysis is done.
       redirectTimerRef.current = setTimeout(() => {
-        navigate('/patient', {
-          state: {
-            uploadedSessionId: session.id,
-            status: session.status,
-          },
-        });
+        navigate(resultPath(session.id));
       }, 1500);
     } catch (err) {
       setIsUploading(false);
@@ -430,7 +426,7 @@ function UploadForm({
               </Badge>
             </Group>
             <Text size="xs" c="dimmed">
-              Redirecting back to your plan...
+              Opening your result...
             </Text>
           </Stack>
         </Alert>

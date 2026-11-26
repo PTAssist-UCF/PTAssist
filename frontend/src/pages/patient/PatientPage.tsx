@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import {
   Container,
   Title,
@@ -7,11 +7,9 @@ import {
   Button,
   Card,
   Group,
-  Badge,
   Stack,
   SimpleGrid,
   Paper,
-  Alert,
   Image,
   Modal,
 } from '@mantine/core';
@@ -27,10 +25,6 @@ import { describeFrequency, describeTarget, uploadPath } from './planDisplay';
  * (GET /plans/me), each with its targets and a button to upload a video for it.
  */
 export default function PatientPage() {
-  const location = useLocation();
-  const uploadedSessionId = (location.state as { uploadedSessionId?: string } | null)
-    ?.uploadedSessionId;
-
   const { data: plan, isPending, isFetching, error, refetch } = useGetMyPlan();
   const exercises = plan?.exercises ?? [];
 
@@ -59,24 +53,6 @@ export default function PatientPage() {
           highContrast={highContrast}
           onHighContrastChange={setHighContrast}
         />
-
-        {uploadedSessionId && (
-          <Alert color="teal" title="Upload in Progress">
-            <Group gap="xs" mb="xs">
-              <Text size="sm">
-                Session{' '}
-                <Text span fw={600}>
-                  {uploadedSessionId}
-                </Text>{' '}
-                was successfully uploaded and is currently
-              </Text>
-              <Badge color="yellow" variant="light">
-                processing
-              </Badge>
-            </Group>
-            <Text size="sm">Your feedback and scores will appear once analysis is complete.</Text>
-          </Alert>
-        )}
 
         <Paper
           withBorder

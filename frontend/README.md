@@ -140,15 +140,27 @@ const { data: me, isLoading, error } = useGetMe();
 - **One form per exercise:** the upload form is keyed by the plan exercise id. When the address changes to another exercise, even with the browser's Back button, the form starts over: the old form's video is never sent with the new id, and its upload is stopped.
 - **An exercise taken out of the plan:** if a therapist removes it before the upload (`POST /sessions` answers `404` "Plan exercise not found") or while the video uploads (`409`), the video isn't saved. The page says so, takes the exercise out of the cached plan (so neither page offers it again, even if the next step fails), and loads the plan again, so the patient can choose from what is left. Any other `404` is an ordinary upload error.
 - **Illustrations and instructions** for each exercise are in `src/pages/patient/exerciseInfo.ts`, by the exercise's name in the API. They are static, not plan data, and an exercise without an entry shows without them.
-- No progress yet: the page shows only what the plan holds. Progress (`GET /patients/{id}/progress`) is SCRUM-96.
+- No progress yet: the page shows only what the plan holds. Past results are in Results & History (SCRUM-78). Progress (`GET /patients/{id}/progress`) is SCRUM-96.
 
 ## Upload and results
 
 1. (SCRUM-58) The patient picks a file or records a video on a phone browser (`UploadPage.tsx`) for an exercise of their plan (see My plan), validated on the client for format (MP4/MOV/WebM), size (≤ 500 MB, the API's limit), and duration (3s to 120s) before upload with a progress bar (`uploadWithProgress`).
-2. The session starts as `processing`. The page polls the status every few seconds, and gives up after a timeout at least as long as the backend's cutoff for sessions stuck in `processing` (SCRUM-66), so it never gives up before the backend does (see [Clip limits and timing](../docs/analysis-result.md#clip-limits-and-timing)).
-3. On `complete`, show `rep_count` (or `hold_seconds` for a hold exercise such as the plank), the form score, and feedback. On `failed`, show `error_message`, and offer a re-upload unless `error_code` is `unknown_exercise` (uploading again would fail the same way).
+2. (SCRUM-78) After the upload, the page opens the new session's result page, `/patient/history/:sessionId` (see Results and history). The session starts as `processing`. The result page polls its status every few seconds (`useSessionStatus`), and gives up after a timeout at least as long as the backend's cutoff for sessions stuck in `processing` (SCRUM-66), so it never gives up before the backend does (see [Clip limits and timing](../docs/analysis-result.md#clip-limits-and-timing)). Once the analysis has finished, it loads the result (`GET /sessions/{id}/result`).
+3. On `complete`, `ResultView` shows `rep_count` (or `hold_seconds` for a hold exercise such as the plank), the form score, and feedback. On `failed`, it shows `error_message`, and offers a re-upload for the same exercise unless `error_code` is `unknown_exercise` (uploading again would fail the same way).
 
 The result's fields, how to show them (score bands, zero reps, holds, sides), and the failure codes are in [`docs/analysis-result.md`](../docs/analysis-result.md). Sample results for building screens are in `docs/analysis-result-examples/`.
+
+## Results and history (SCRUM-78)
+
+**Results & History** in the navigation (`/patient/history`, `src/pages/patient/HistoryPage.tsx`) lists the patient's sessions (one uploaded video each), newest first, from `GET /patients/{id}/sessions` with their own id from `GET /me`. Each one shows the exercise, when the video was uploaded, and its status, and opens that session's result page.
+
+- **Numbers in the list:** the list has no results (decision 3 in `backend/README.md`, Sessions, results, and progress), so the page takes each complete session's count and form score from `GET /patients/{id}/progress`, by session id. If that request fails, the list still shows, without the numbers, and each result page still has them.
+- **A session still processing** polls its status (`useSessionStatus`). When its analysis has finished, the list and the numbers load again.
+- **A new upload shows up:** both requests are sent again every time the page opens (`refetchOnMount: 'always'`), even when the cached answer is still fresh.
+- **No sessions yet:** the page says so and links to My Plan. A failed request shows the API's answer and a **Try again** button.
+- **One session's result** is at `/patient/history/:sessionId` (`SessionResultPage.tsx`), from `GET /sessions/{id}/result`: the exercise, the date, the status, and the result shown with `ResultView`. The upload page opens it after an upload. While the session is processing, the page polls (see Upload and results). After the timeout it says the analysis is taking longer than usual, with a **Check again** button that starts the polling over. A `404` (no such session, or another patient's: the API gives both the same answer) or a `422` (not a session id) shows "Session not found".
+- **Shared pieces:** `src/pages/patient/sessionDisplay.ts` has the addresses (`resultPath`) and how a session shows (status badges, dates, counts). The therapist's patient detail (SCRUM-95) can use them too.
+- **Tests** (`HistoryPage.test.tsx`, `SessionResultPage.test.tsx`) use a fake API that answers by path, and the AI service's made-up results (`testSessions.ts`).
 
 ## Plan builder (SCRUM-76)
 

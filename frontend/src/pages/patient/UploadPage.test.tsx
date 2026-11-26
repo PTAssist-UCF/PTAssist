@@ -51,6 +51,7 @@ describe('UploadPage', () => {
       [
         { path: '/patient/upload', element: <UploadPage /> },
         { path: '/patient', element: <div>Patient Plan Page</div> },
+        { path: '/patient/history/:sessionId', element: <div>Session Result Page</div> },
       ],
       { initialEntries },
     );
@@ -217,7 +218,7 @@ describe('UploadPage', () => {
       });
     });
 
-    renderPage([SQUAT_UPLOAD]);
+    const { router } = renderPage([SQUAT_UPLOAD]);
 
     const validFile = new File(['valid video content'], 'exercise.mp4', { type: 'video/mp4' });
     await chooseVideo(validFile);
@@ -247,13 +248,15 @@ describe('UploadPage', () => {
     expect(sentForm?.get('plan_exercise_id')).toBe(SQUAT.id);
     expect(sentForm?.get('video')).toBeInstanceOf(File);
 
-    // Navigation back to plan
+    // Then the new session's result page opens, which polls until the analysis is done.
+    expect(screen.getByText('Opening your result...')).toBeDefined();
     await waitFor(
       () => {
-        expect(screen.getByText('Patient Plan Page')).toBeDefined();
+        expect(screen.getByText('Session Result Page')).toBeDefined();
       },
       { timeout: 2500 },
     );
+    expect(router.state.location.pathname).toBe(`/patient/history/${sessionResponse.id}`);
   });
 
   it('displays API error message when upload fails', async () => {
