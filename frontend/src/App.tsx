@@ -10,11 +10,13 @@ import SignInPage from './pages/SignInPage';
 import SignUpPage from './pages/SignUpPage';
 import PatientPage from './pages/patient/PatientPage';
 import UploadPage from './pages/patient/UploadPage';
+import HistoryPage from './pages/patient/HistoryPage';
+import SessionResultPage from './pages/patient/SessionResultPage';
 import TherapistPage from './pages/therapist/TherapistPage';
 import PlansPage from './pages/therapist/PlansPage';
 import PlanBuilderPage from './pages/therapist/PlanBuilderPage';
 import PatientDetailPage from './pages/therapist/PatientDetailPage';
-import SessionResultPage from './pages/therapist/SessionResultPage';
+import TherapistSessionResultPage from './pages/therapist/SessionResultPage';
 import RoleRedirect from '@/components/RoleRedirect';
 import RoleRoute from '@/components/RoleRoute';
 import ComingSoon from '@/components/ComingSoon';
@@ -55,11 +57,21 @@ export default function App() {
                   </RoleRoute>
                 }
               />
+              {/* Results & History: the patient's sessions, each opening its result page. */}
               <Route
                 path="/patient/history"
                 element={
                   <RoleRoute role="patient">
-                    <ComingSoon title="Results & History" />
+                    <HistoryPage />
+                  </RoleRoute>
+                }
+              />
+              {/* One session's result. The upload page opens it after an upload. */}
+              <Route
+                path="/patient/history/:sessionId"
+                element={
+                  <RoleRoute role="patient">
+                    <SessionResultPage />
                   </RoleRoute>
                 }
               />
@@ -103,7 +115,7 @@ export default function App() {
                 path="/therapist/patients/:patientId/sessions/:sessionId"
                 element={
                   <RoleRoute role="therapist">
-                    <SessionResultPage />
+                    <TherapistSessionResultPage />
                   </RoleRoute>
                 }
               />

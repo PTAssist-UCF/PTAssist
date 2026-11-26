@@ -15,8 +15,6 @@ import {
   Card,
   Box,
   SimpleGrid,
-  List,
-  ThemeIcon,
   NavLink,
 } from '@mantine/core';
 
@@ -33,8 +31,10 @@ import {
   MAX_VIDEO_SECONDS,
   MAX_VIDEO_UPLOAD_TEXT,
 } from '@/utils/videoValidation';
+import RecordingTips from './RecordingTips';
 import PlanStatus from './PlanStatus';
 import { describeFrequency, describeTarget, uploadPath } from './planDisplay';
+import { resultPath } from './sessionDisplay';
 
 // POST /sessions answers 404 with this detail when the plan exercise isn't in the
 // patient's plan (get_owned_plan_exercise in backend/app/routes/sessions.py). Any other
@@ -131,64 +131,9 @@ export default function UploadPage() {
           </Paper>
         )}
 
-        <Paper withBorder p="md" radius="md">
-          <Title order={3} size="h4" mb="sm">
-            Recording Tips
-          </Title>
-          <List spacing="xs" size="sm" c="dimmed">
-            <List.Item
-              icon={
-                <ThemeIcon color="teal" size={20} radius="xl">
-                  •
-                </ThemeIcon>
-              }
-            >
-              <Text span fw={500} c="dark">
-                Position your camera:
-              </Text>{' '}
-              Place your phone or camera at waist or chest height, propped up securely.
-            </List.Item>
-            <List.Item
-              icon={
-                <ThemeIcon color="teal" size={20} radius="xl">
-                  •
-                </ThemeIcon>
-              }
-            >
-              <Text span fw={500} c="dark">
-                Full body in frame:
-              </Text>{' '}
-              Step back so your entire body from head to toes is clearly visible throughout the
-              movement.
-            </List.Item>
-            <List.Item
-              icon={
-                <ThemeIcon color="teal" size={20} radius="xl">
-                  •
-                </ThemeIcon>
-              }
-            >
-              <Text span fw={500} c="dark">
-                Good lighting & solo framing:
-              </Text>{' '}
-              Ensure you are well lit from the front, and make sure no other people are in the
-              frame.
-            </List.Item>
-            <List.Item
-              icon={
-                <ThemeIcon color="teal" size={20} radius="xl">
-                  •
-                </ThemeIcon>
-              }
-            >
-              <Text span fw={500} c="dark">
-                Timing:
-              </Text>{' '}
-              Perform your reps at a steady, controlled pace. Videos must be between{' '}
-              {MIN_VIDEO_SECONDS} seconds and {MAX_VIDEO_SECONDS / 60} minutes.
-            </List.Item>
-          </List>
-        </Paper>
+        {/* How to film the exercise, from its spec. The tips differ for each exercise, so
+            none show until one is chosen. */}
+        {exercise && <RecordingTips exercise={exercise.exercise} />}
       </Stack>
     </Container>
   );
@@ -235,7 +180,7 @@ function UploadForm({
 
   // When the form goes away (the address names another exercise, or the patient leaves
   // the page), stop what it still has running for its video: the upload, the preview, and
-  // the move back to the plan after an upload. A length check that hasn't finished can't
+  // the move to its result page after an upload. A length check that hasn't finished can't
   // change anything any more: its result goes to this form, which is gone.
   useEffect(() => {
     return () => {
@@ -372,14 +317,9 @@ function UploadForm({
       setCreatedSession(session);
       setIsUploading(false);
 
-      // Automatically navigate back to /patient after successful upload
+      // Then open the new session's result page, which polls until the analysis is done.
       redirectTimerRef.current = setTimeout(() => {
-        navigate('/patient', {
-          state: {
-            uploadedSessionId: session.id,
-            status: session.status,
-          },
-        });
+        navigate(resultPath(session.id));
       }, 1500);
     } catch (err) {
       setIsUploading(false);
@@ -430,7 +370,7 @@ function UploadForm({
               </Badge>
             </Group>
             <Text size="xs" c="dimmed">
-              Redirecting back to your plan...
+              Opening your result...
             </Text>
           </Stack>
         </Alert>

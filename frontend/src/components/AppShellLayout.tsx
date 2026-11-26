@@ -177,7 +177,11 @@ export default function AppShellLayout({ children }: { children?: ReactNode }) {
                 to="/patient/history"
                 label="Results & History"
                 description="AI feedback & past logs"
-                active={location.pathname === '/patient/history'}
+                active={
+                  location.pathname === '/patient/history' ||
+                  // Also on one session's result page.
+                  matchPath('/patient/history/:sessionId', location.pathname) !== null
+                }
                 onClick={close}
               />
             </Box>

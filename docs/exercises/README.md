@@ -14,7 +14,7 @@ Who uses them:
 
 - The exercise analyzers in `ai/app/analysis/exercises/` implement them (SCRUM-51, SCRUM-53, SCRUM-69 to SCRUM-71).
 - The labeled test set (SCRUM-54) is filmed with each spec's camera setup and acts out its form errors (see [`../test-data-plan.md`](../test-data-plan.md)). The analyzers are tuned against [`../success-criteria.md`](../success-criteria.md).
-- The upload page's recording tips (SCRUM-97) come from each spec's **Camera** section.
+- The upload page's recording tips (SCRUM-97) come from each spec's **Camera** section, copied into `frontend/src/pages/patient/recordingGuidance.ts`. Change both together.
 
 How a result is shaped (reps, holds, sides, issues, metrics, scores, and feedback) is in [`../analysis-result.md`](../analysis-result.md). This page adds the rules that every spec shares.
 
