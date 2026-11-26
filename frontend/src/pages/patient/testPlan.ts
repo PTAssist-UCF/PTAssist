@@ -48,6 +48,34 @@ export const SIDE_LEG_RAISE: PlanExerciseResponse = {
   times_per_week: 3,
 };
 
+export const SHOULDER_ABDUCTION: PlanExerciseResponse = {
+  id: '6b8d0f2a-3c5e-4a7b-9d1f-2e4a6c8e0b3d',
+  exercise: {
+    id: '8f9e0d1c-2b3a-4c5d-8e6f-7a8b9c0d1e2f',
+    name: 'shoulder_abduction',
+    display_name: 'Shoulder abduction',
+    kind: 'reps',
+  },
+  reps: 10,
+  hold_seconds: null,
+  sets: 2,
+  times_per_week: 5,
+};
+
+export const CAT_COW: PlanExerciseResponse = {
+  id: 'd2e4f6a8-1b3c-4d5e-8f7a-9b0c1d2e3f4a',
+  exercise: {
+    id: '3a2b1c0d-9e8f-4a7b-8c6d-5e4f3a2b1c0d',
+    name: 'cat_cow',
+    display_name: 'Cat-cow',
+    kind: 'reps',
+  },
+  reps: 8,
+  hold_seconds: null,
+  sets: 2,
+  times_per_week: 5,
+};
+
 /** A plan with these exercises. */
 export function planWith(...exercises: PlanExerciseResponse[]): PlanResponse {
   return {
