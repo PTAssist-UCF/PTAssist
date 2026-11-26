@@ -15,8 +15,6 @@ import {
   Card,
   Box,
   SimpleGrid,
-  List,
-  ThemeIcon,
   NavLink,
 } from '@mantine/core';
 
@@ -33,6 +31,7 @@ import {
   MAX_VIDEO_SECONDS,
   MAX_VIDEO_UPLOAD_TEXT,
 } from '@/utils/videoValidation';
+import RecordingTips from './RecordingTips';
 import PlanStatus from './PlanStatus';
 import { describeFrequency, describeTarget, uploadPath } from './planDisplay';
 
@@ -131,64 +130,9 @@ export default function UploadPage() {
           </Paper>
         )}
 
-        <Paper withBorder p="md" radius="md">
-          <Title order={3} size="h4" mb="sm">
-            Recording Tips
-          </Title>
-          <List spacing="xs" size="sm" c="dimmed">
-            <List.Item
-              icon={
-                <ThemeIcon color="teal" size={20} radius="xl">
-                  •
-                </ThemeIcon>
-              }
-            >
-              <Text span fw={500} c="dark">
-                Position your camera:
-              </Text>{' '}
-              Place your phone or camera at waist or chest height, propped up securely.
-            </List.Item>
-            <List.Item
-              icon={
-                <ThemeIcon color="teal" size={20} radius="xl">
-                  •
-                </ThemeIcon>
-              }
-            >
-              <Text span fw={500} c="dark">
-                Full body in frame:
-              </Text>{' '}
-              Step back so your entire body from head to toes is clearly visible throughout the
-              movement.
-            </List.Item>
-            <List.Item
-              icon={
-                <ThemeIcon color="teal" size={20} radius="xl">
-                  •
-                </ThemeIcon>
-              }
-            >
-              <Text span fw={500} c="dark">
-                Good lighting & solo framing:
-              </Text>{' '}
-              Ensure you are well lit from the front, and make sure no other people are in the
-              frame.
-            </List.Item>
-            <List.Item
-              icon={
-                <ThemeIcon color="teal" size={20} radius="xl">
-                  •
-                </ThemeIcon>
-              }
-            >
-              <Text span fw={500} c="dark">
-                Timing:
-              </Text>{' '}
-              Perform your reps at a steady, controlled pace. Videos must be between{' '}
-              {MIN_VIDEO_SECONDS} seconds and {MAX_VIDEO_SECONDS / 60} minutes.
-            </List.Item>
-          </List>
-        </Paper>
+        {/* How to film the exercise, from its spec. The tips differ for each exercise, so
+            none show until one is chosen. */}
+        {exercise && <RecordingTips exercise={exercise.exercise} />}
       </Stack>
     </Container>
   );

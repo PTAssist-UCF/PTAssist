@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MantineProvider } from '@mantine/core';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -9,7 +9,17 @@ import * as apiClient from '@/apiClient';
 import { getGetMyPlanQueryKey } from '@/api/plans';
 import type { PlanResponse } from '@/api/model';
 import * as videoValidation from '@/utils/videoValidation';
-import { NO_PLAN, PLANK, SQUAT, fakePlanApi, planWith } from './testPlan';
+import { GENERAL_RECORDING_TIPS, RECORDING_GUIDANCE } from './recordingGuidance';
+import {
+  CAT_COW,
+  NO_PLAN,
+  PLANK,
+  SHOULDER_ABDUCTION,
+  SIDE_LEG_RAISE,
+  SQUAT,
+  fakePlanApi,
+  planWith,
+} from './testPlan';
 
 vi.mock('@/apiClient', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/apiClient')>();
@@ -92,7 +102,54 @@ describe('UploadPage', () => {
     expect(screen.queryByLabelText(/plan exercise id/i)).toBeNull();
     expect(screen.getByRole('button', { name: /record with camera/i })).toBeDefined();
     expect(screen.getByRole('button', { name: /choose video file/i })).toBeDefined();
-    expect(screen.getByRole('heading', { name: 'Recording Tips' })).toBeDefined();
+    expect(screen.getByRole('heading', { name: 'Recording Tips for Squat' })).toBeDefined();
+  });
+
+  it.each([
+    ['squat', SQUAT, RECORDING_GUIDANCE.squat],
+    ['plank', PLANK, RECORDING_GUIDANCE.plank],
+    ['side-lying leg raise', SIDE_LEG_RAISE, RECORDING_GUIDANCE.side_leg_raise],
+    ['shoulder abduction', SHOULDER_ABDUCTION, RECORDING_GUIDANCE.shoulder_abduction],
+    ['cat-cow', CAT_COW, RECORDING_GUIDANCE.cat_cow],
+  ])('shows how to film the %s, from its spec', async (_, item, guidance) => {
+    fakePlanApi([200, planWith(item)]);
+
+    renderPage([`/patient/upload?plan_exercise_id=${item.id}`]);
+
+    const name = `Recording Tips for ${item.exercise.display_name}`;
+    const tips = within(await screen.findByRole('region', { name }));
+    expect(tips.getByRole('heading', { name: 'Set Up Your Phone' })).toBeDefined();
+    expect(tips.getByRole('heading', { name: 'When You Record' })).toBeDefined();
+    for (const text of [
+      guidance.view,
+      guidance.phone,
+      guidance.height,
+      guidance.distance,
+      guidance.framing,
+      guidance.startPosition,
+      ...guidance.tips,
+      ...GENERAL_RECORDING_TIPS,
+    ]) {
+      expect(tips.getByText(text)).toBeDefined();
+    }
+  });
+
+  it('shows only the tips for every exercise, for an exercise without guidance of its own', async () => {
+    const lunge = {
+      ...SQUAT,
+      exercise: { ...SQUAT.exercise, name: 'lunge', display_name: 'Lunge' },
+    };
+    fakePlanApi([200, planWith(lunge)]);
+
+    renderPage([SQUAT_UPLOAD]);
+
+    const tips = within(await screen.findByRole('region', { name: 'Recording Tips for Lunge' }));
+    // No phone setup, start position or tips of its own.
+    expect(tips.queryByRole('heading', { name: 'Set Up Your Phone' })).toBeNull();
+    expect(tips.getAllByRole('listitem')).toHaveLength(GENERAL_RECORDING_TIPS.length);
+    for (const tip of GENERAL_RECORDING_TIPS) {
+      expect(tips.getByText(tip)).toBeDefined();
+    }
   });
 
   it('configures phone camera capture and desktop file inputs correctly', async () => {
@@ -121,12 +178,15 @@ describe('UploadPage', () => {
     expect(screen.queryByTestId('file-input')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Upload Video' })).toBeNull();
     expect(screen.queryByText("This exercise isn't in your plan")).toBeNull();
+    // No recording tips either: they are for the exercise being uploaded.
+    expect(screen.queryByRole('region', { name: /recording tips/i })).toBeNull();
 
     fireEvent.click(plank);
 
     expect(await screen.findByRole('heading', { name: 'Plank' })).toBeDefined();
     expect(screen.getByText('3 sets × 30-second hold')).toBeDefined();
     expect(screen.getByTestId('file-input')).toBeDefined();
+    expect(screen.getByRole('region', { name: 'Recording Tips for Plank' })).toBeDefined();
   });
 
   it('says so when the exercise in the address is not in the plan, and offers the plan', async () => {
