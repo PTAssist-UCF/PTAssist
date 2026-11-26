@@ -553,6 +553,111 @@ describe('plan builder pages', () => {
   });
 });
 
+describe('patient detail pages', () => {
+  const PATIENT = {
+    id: '7c2e9a41-3b5d-4f60-8e1a-9d3c5b7f2e04',
+    email: 'sam@example.com',
+    linked_at: '2026-11-11T08:30:00Z',
+  };
+  const SESSION = {
+    id: '9d4f6b83-5e7a-4c1d-8b2f-3a6c8e0d1f57',
+    plan_exercise_id: 'plan-exercise-squat',
+    exercise_name: 'squat',
+    exercise_display_name: 'Squat',
+    status: 'failed',
+    created_at: '2026-11-12T10:00:00Z',
+  };
+  const DETAIL = `/therapist/patients/${PATIENT.id}`;
+  const RESULT = `${DETAIL}/sessions/${SESSION.id}`;
+
+  /**
+   * A fake API that answers by path: GET /me with this role, and the detail pages'
+   * requests. The patient has one session, which failed. Any other path answers 404.
+   */
+  function fakeDetailApi(role: string) {
+    const answers: Record<string, [number, unknown]> = {
+      '/me': [200, { ...ME, role }],
+      '/therapist/patients': [200, [PATIENT]],
+      [`/patients/${PATIENT.id}/sessions`]: [200, [SESSION]],
+      [`/sessions/${SESSION.id}/result`]: [
+        200,
+        {
+          ...SESSION,
+          result: {
+            status: 'failed',
+            rep_count: null,
+            hold_seconds: null,
+            form_score: null,
+            reps: [],
+            feedback: [],
+            error_code: 'no_person',
+            error_message: "We couldn't find a person in your video.",
+            analyzer_version: '0.4.0',
+          },
+        },
+      ],
+    };
+    return vi.fn<typeof fetch>(async (input) => {
+      const path = new URL(String(input)).pathname;
+      const [status, body] = answers[path] ?? [404, { detail: 'Not Found' }];
+      return new Response(JSON.stringify(body), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+  }
+
+  it("opens a linked patient's sessions at /therapist/patients/:patientId", async () => {
+    clerk.isSignedIn = true;
+    vi.stubGlobal('fetch', fakeDetailApi('therapist'));
+
+    renderApp(DETAIL);
+
+    expect(await screen.findByRole('heading', { name: 'sam@example.com' })).toBeDefined();
+    const open = await screen.findByRole('link', { name: /^Open the Squat session/ });
+    expect(open.getAttribute('href')).toBe(RESULT);
+    // Under Patients in the navigation, not Plan Builder.
+    const navLink = screen.getByRole('link', { name: /patient roster/i });
+    expect(navLink.getAttribute('data-active')).toBe('true');
+    const planBuilder = screen.getByRole('link', { name: /plan builder/i });
+    expect(planBuilder.getAttribute('data-active')).toBeNull();
+  });
+
+  it('opens one session with its result at /therapist/patients/:patientId/sessions/:sessionId', async () => {
+    clerk.isSignedIn = true;
+    vi.stubGlobal('fetch', fakeDetailApi('therapist'));
+
+    renderApp(RESULT);
+
+    expect(await screen.findByRole('heading', { name: 'Squat' })).toBeDefined();
+    expect(await screen.findByText("We couldn't find a person in your video.")).toBeDefined();
+    const navLink = screen.getByRole('link', { name: /patient roster/i });
+    expect(navLink.getAttribute('data-active')).toBe('true');
+  });
+
+  it.each([DETAIL, RESULT])(
+    "keeps a patient out of %s, and sends no therapist's request",
+    async (path) => {
+      clerk.isSignedIn = true;
+      const api = fakeDetailApi('patient');
+      vi.stubGlobal('fetch', api);
+
+      renderApp(path);
+
+      await waitFor(() => expect(window.location.pathname).toBe('/patient'));
+      const paths = api.mock.calls.map(([url]) => new URL(String(url)).pathname);
+      expect(
+        paths.some(
+          (requested) =>
+            requested.startsWith('/therapist') ||
+            requested.startsWith('/patients/') ||
+            requested.startsWith('/sessions/'),
+        ),
+      ).toBe(false);
+    },
+  );
+});
+
 describe('results and history pages', () => {
   // The patient pages' test data. Its patient is ME, by the same id.
   const SESSION_RESULT = withResult(COMPLETE_SQUAT, STUB_REPS_RESULT);

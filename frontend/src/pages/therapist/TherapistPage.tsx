@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Alert,
-  Badge,
+  Anchor,
   Button,
   Container,
   EmptyState,
@@ -16,24 +16,20 @@ import {
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 
-import type { LinkedPatientResponse, SessionStatus } from '@/api/model';
+import type { LinkedPatientResponse } from '@/api/model';
 import { useListLinkedPatients } from '@/api/patients';
 import { useListPatientSessions } from '@/api/results';
 import { ApiError } from '@/apiClient';
+import SessionStatusBadge from '@/components/SessionStatusBadge';
 import { apiErrorText } from './apiErrorText';
 import LinkPatientModal from './LinkPatientModal';
+import { formatDateTime, patientPath } from './sessionDisplay';
 import UnlinkPatientModal from './UnlinkPatientModal';
-
-/** How each session status shows in the list. */
-const STATUS_BADGE: Record<SessionStatus, { label: string; color: string }> = {
-  complete: { label: 'Complete', color: 'teal' },
-  processing: { label: 'Processing', color: 'yellow' },
-  failed: { label: 'Failed', color: 'red' },
-};
 
 /**
  * The therapist's home page: their linked patients, each with their last session, and
- * buttons to link a patient by email, open a patient's plan, or unlink a patient.
+ * buttons to link a patient by email, open a patient's plan, or unlink a patient. Each
+ * patient's email opens their detail page, with all their sessions and results.
  */
 export default function TherapistPage() {
   const [linkOpened, linkDialog] = useDisclosure(false);
@@ -140,7 +136,12 @@ function PatientList({ onUnlink }: { onUnlink: (patient: LinkedPatientResponse) 
         <Table.Tbody>
           {patients.map((patient) => (
             <Table.Tr key={patient.id}>
-              <Table.Td fw={500}>{patient.email}</Table.Td>
+              <Table.Td>
+                {/* The patient's detail page (SCRUM-95): their sessions and results. */}
+                <Anchor component={Link} to={patientPath(patient.id)} fw={500}>
+                  {patient.email}
+                </Anchor>
+              </Table.Td>
               <Table.Td>
                 <LastSession patientId={patient.id} />
               </Table.Td>
@@ -216,21 +217,13 @@ function LastSession({ patientId }: { patientId: string }) {
     );
   }
 
-  const badge = STATUS_BADGE[last.status];
   return (
     <Group gap="xs">
-      <Badge color={badge.color} variant="light">
-        {badge.label}
-      </Badge>
+      <SessionStatusBadge status={last.status} />
       <Text size="sm">{last.exercise_display_name}</Text>
       <Text size="sm" c="dimmed" component="time" dateTime={last.created_at}>
         {formatDateTime(last.created_at)}
       </Text>
     </Group>
   );
-}
-
-/** A date and time in the browser's language, for example "Nov 10, 2026, 3:00 PM". */
-function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 }

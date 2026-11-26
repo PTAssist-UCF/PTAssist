@@ -181,6 +181,23 @@ The form never loses the therapist's changes, and never saves an old list over a
 - **Opening another patient starts a new form** (`PlanForm` is keyed by the patient's id), so nothing typed for one patient is saved to another one's plan.
 - **A save cancels a refetch that is still running**, so its old answer can't replace the saved plan.
 
+## Patient detail (SCRUM-95)
+
+A therapist opens any linked patient's sessions, and each session's result. The API's rules are in `backend/README.md`, Sessions, results, and progress.
+
+1. **Each email in the patient list** (`/therapist`, `TherapistPage.tsx`) opens that patient's detail page at `/therapist/patients/:patientId` (`PatientDetailPage.tsx`): their email, when they were linked, a **Plan** button (the plan builder), and every session they uploaded, newest first (`GET /patients/{patient_id}/sessions`), with its exercise, upload time, and status. **Patients** stays highlighted in the navigation.
+2. **Open** on a session opens its page at `/therapist/patients/:patientId/sessions/:sessionId` (`SessionResultPage.tsx`), with its result from `GET /sessions/{session_id}/result` in the result view (`ResultView`, SCRUM-59). It shows the result in the same words as for the patient, without **Upload again**. Under it are the error code (for a failed session) and the analyzer version.
+3. **While a session is processing**, both pages ask again every 3 seconds (`POLL_INTERVAL_MS`), and stop when nothing is processing, or after an error (the result page then says the check failed, with **Try again**). They need no time limit of their own: both routes fail a session stuck in processing (SCRUM-66), so it ends as failed.
+4. **Made-up results:** until the AI service can analyze an exercise, it sends a made-up result whose analyzer version ends in `-stub` (`docs/analysis-result.md`, Versions). The result page shows it under a "Placeholder result" warning, so it is never taken for a real one (`isStubResult` in `sessionDisplay.ts`).
+
+What a therapist can't see, and what the pages do then:
+
+- **A patient who isn't in the therapist's list** (an unknown id, someone else's patient): "Patient not found", with a link back to the patient list, without asking the API for anything of theirs. A `403` or `404` for their sessions (unlinked since, or no longer a patient) shows the same, even over sessions from the cache.
+- **A session that isn't in that patient's list**: "Session not found", with a link to the patient's sessions, without asking for its result. The API would show another linked patient's session, which would then appear under this patient's name. If the list is being read again (for example, after a new upload), the page waits for it first. A `403` or `404` for the result shows "Session not found" too.
+- **Any other error** shows the API's answer and a **Try again** button.
+
+`SessionStatusBadge` in `src/components/` shows a session's status (processing, complete, or failed) the same way on every page that lists sessions, including the patient list.
+
 ## Screens
 
 | Patient                      | Therapist                            |

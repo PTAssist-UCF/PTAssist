@@ -15,6 +15,8 @@ import SessionResultPage from './pages/patient/SessionResultPage';
 import TherapistPage from './pages/therapist/TherapistPage';
 import PlansPage from './pages/therapist/PlansPage';
 import PlanBuilderPage from './pages/therapist/PlanBuilderPage';
+import PatientDetailPage from './pages/therapist/PatientDetailPage';
+import TherapistSessionResultPage from './pages/therapist/SessionResultPage';
 import RoleRedirect from '@/components/RoleRedirect';
 import RoleRoute from '@/components/RoleRoute';
 import ComingSoon from '@/components/ComingSoon';
@@ -96,6 +98,24 @@ export default function App() {
                 element={
                   <RoleRoute role="therapist">
                     <PlanBuilderPage />
+                  </RoleRoute>
+                }
+              />
+              {/* One linked patient's sessions. Each patient in the patient list links here. */}
+              <Route
+                path="/therapist/patients/:patientId"
+                element={
+                  <RoleRoute role="therapist">
+                    <PatientDetailPage />
+                  </RoleRoute>
+                }
+              />
+              {/* One of those sessions, with its result. */}
+              <Route
+                path="/therapist/patients/:patientId/sessions/:sessionId"
+                element={
+                  <RoleRoute role="therapist">
+                    <TherapistSessionResultPage />
                   </RoleRoute>
                 }
               />
